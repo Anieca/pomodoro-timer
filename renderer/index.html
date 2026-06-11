@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:;" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <title>Pomodoro Atelier</title>
+</head>
+<body>
+  <div class="drag-strip"></div>
+  <div class="grain"></div>
+
+  <div class="layout">
+    <!-- ======= サイドバー:タスク ======= -->
+    <aside class="sidebar">
+      <header class="brand">
+        <h1>Pomodoro<br /><em>Atelier</em></h1>
+        <p class="today-stat">今日 <span id="todayCount">0</span> 🍅 · <span id="todayMin">0</span>分</p>
+      </header>
+
+      <form id="taskForm" class="task-form" autocomplete="off">
+        <input id="taskInput" type="text" placeholder="新しいタスクを追加…" maxlength="120" />
+        <button type="submit" aria-label="追加">＋</button>
+      </form>
+
+      <div class="task-section">
+        <h2>タスク</h2>
+        <ul id="taskList" class="task-list"></ul>
+      </div>
+
+      <div class="task-section done-section">
+        <h2>完了済み <button id="toggleDone" class="ghost-btn">表示</button></h2>
+        <ul id="doneList" class="task-list" hidden></ul>
+      </div>
+    </aside>
+
+    <!-- ======= メイン:タイマー ======= -->
+    <main class="stage">
+      <div class="topbar">
+        <nav class="mode-tabs" id="modeTabs">
+          <button data-mode="work" class="active">フォーカス</button>
+          <button data-mode="short">小休憩</button>
+          <button data-mode="long">長休憩</button>
+        </nav>
+        <div class="top-actions">
+          <button id="historyBtn" class="icon-btn" title="履歴">履歴</button>
+          <button id="settingsBtn" class="icon-btn" title="設定">設定</button>
+        </div>
+      </div>
+
+      <div class="timer-wrap">
+        <div class="dial">
+          <svg viewBox="0 0 300 300">
+            <circle class="ring-bg" cx="150" cy="150" r="132" />
+            <circle class="ring-fg" id="ringFg" cx="150" cy="150" r="132" />
+          </svg>
+          <div class="dial-inner">
+            <div class="time" id="timeDisplay">25:00</div>
+            <div class="phase" id="phaseLabel">準備完了</div>
+            <div class="cycle-dots" id="cycleDots"></div>
+          </div>
+        </div>
+
+        <div class="focus-task" id="focusTask"></div>
+
+        <div class="controls">
+          <button id="startBtn" class="primary-btn">開始</button>
+          <button id="skipBtn" class="secondary-btn" hidden>休憩をスキップ</button>
+          <button id="stopBtn" class="secondary-btn" hidden>中止</button>
+        </div>
+
+        <button class="noise-indicator" id="noiseIndicator" hidden title="クリックでオン/オフ">♪ ホワイトノイズ</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- ======= 設定モーダル ======= -->
+  <div class="modal-backdrop" id="settingsModal" hidden>
+    <div class="modal">
+      <h2>設定</h2>
+      <div class="form-grid">
+        <label>フォーカス(分)<input id="setWork" type="number" min="1" max="120" /></label>
+        <label>小休憩(分)<input id="setShort" type="number" min="1" max="60" /></label>
+        <label>長休憩(分)<input id="setLong" type="number" min="1" max="90" /></label>
+        <label>長休憩の間隔<input id="setEvery" type="number" min="1" max="12" /></label>
+        <label class="row-label"><input id="setAutoBreak" type="checkbox" /> 休憩を自動で開始する</label>
+        <label class="row-label"><input id="setAutoWork" type="checkbox" /> 休憩後にフォーカスを自動で開始する</label>
+      </div>
+      <h3>ホワイトノイズ</h3>
+      <div class="form-grid">
+        <label class="row-label"><input id="setNoiseOn" type="checkbox" /> フォーカス中に再生する</label>
+        <label>音源
+          <div class="sound-row">
+            <select id="setNoiseFile"></select>
+            <button id="previewBtn" type="button" class="icon-btn">♪ 試聴</button>
+          </div>
+        </label>
+        <label>音量 <span id="volLabel">50%</span>
+          <input id="setNoiseVol" type="range" min="0" max="100" />
+        </label>
+        <p class="hint">音源ファイル(mp3 / wav / ogg など)を <code>assets/sounds/</code> に置くと選択できます。</p>
+      </div>
+      <div class="modal-actions">
+        <button id="settingsCancel" class="secondary-btn">キャンセル</button>
+        <button id="settingsSave" class="primary-btn">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======= 履歴モーダル ======= -->
+  <div class="modal-backdrop" id="historyModal" hidden>
+    <div class="modal modal-wide">
+      <h2>ポモドーロ履歴</h2>
+      <ul id="historyList" class="history-list"></ul>
+      <div class="modal-actions history-actions">
+        <div class="export-wrap">
+          <button id="exportBtn" class="secondary-btn">↧ エクスポート</button>
+          <div id="exportMenu" class="menu" hidden>
+            <button data-format="json">JSON(全データ)</button>
+            <button data-format="csv-pomodoros">CSV(ポモドーロ履歴)</button>
+            <button data-format="csv-tasks">CSV(タスク)</button>
+          </div>
+        </div>
+        <button id="historyClose" class="primary-btn">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "pomodoro-timer",
+  "version": "1.0.0",
+  "description": "Focus-To-Do 風ポモドーロタイマー",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "playwright-core": "^1.60.0"
+  }
+}

@@ -1,7 +1,7 @@
 {
   "name": "pomodoro-timer",
   "version": "1.0.0",
-  "description": "Focus-To-Do 風ポモドーロタイマー",
+  "description": "タスク管理と集中タイマーを備えたポモドーロタイマーアプリ",
   "main": "main.js",
   "license": "MIT",
   "scripts": {

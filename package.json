@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Focus-To-Do 風ポモドーロタイマー",
   "main": "main.js",
+  "license": "MIT",
   "scripts": {
     "start": "electron ."
   },

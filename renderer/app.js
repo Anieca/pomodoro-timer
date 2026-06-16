@@ -45,6 +45,8 @@ function migrateSessions(loaded) {
   return (loaded.pomodoros || []).map(p => ({
     ...p,
     mode: p.mode || 'work',
+    taskIds: p.taskIds || [],
+    taskTimes: p.taskTimes || [],
     intervals: p.intervals && p.intervals.length
       ? p.intervals
       : [{ startedAt: p.startedAt, endedAt: p.endedAt }]

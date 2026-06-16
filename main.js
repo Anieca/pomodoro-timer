@@ -106,7 +106,7 @@ ipcMain.handle('data:export', async (e, { format, data }) => {
   const stamp = new Date().toISOString().slice(0, 10);
   const defs = {
     json: { name: `pomodoro-export-${stamp}.json`, filters: [{ name: 'JSON', extensions: ['json'] }] },
-    'csv-pomodoros': { name: `pomodoros-${stamp}.csv`, filters: [{ name: 'CSV', extensions: ['csv'] }] },
+    'csv-sessions': { name: `sessions-${stamp}.csv`, filters: [{ name: 'CSV', extensions: ['csv'] }] },
     'csv-tasks': { name: `tasks-${stamp}.csv`, filters: [{ name: 'CSV', extensions: ['csv'] }] }
   };
   const def = defs[format];
@@ -117,20 +117,26 @@ ipcMain.handle('data:export', async (e, { format, data }) => {
   if (canceled || !filePath) return { saved: false };
 
   const taskTitle = id => (data.tasks.find(t => t.id === id) || {}).title || '(削除済み)';
+  const MODE_LABEL = { work: 'フォーカス', short: '小休憩', long: '長休憩' };
   let content;
   const min = sec => Math.round((sec / 60) * 10) / 10;
+  const sessions = data.sessions || [];
   if (format === 'json') {
     content = JSON.stringify(data, null, 2);
-  } else if (format === 'csv-pomodoros') {
-    const rows = [['ID', '開始', '終了', '長さ(分)', '完走', 'タスク内訳']];
-    for (const p of data.pomodoros) {
+  } else if (format === 'csv-sessions') {
+    const rows = [['ID', '種別', '開始', '終了', '実時間(分)', '完走', '一時停止回数', '実働区間', 'タスク内訳']];
+    for (const p of sessions) {
+      const intervals = p.intervals || [{ startedAt: p.startedAt, endedAt: p.endedAt }];
       rows.push([
         p.id,
+        MODE_LABEL[p.mode] || p.mode || '',
         fmtDate(p.startedAt),
         fmtDate(p.endedAt),
         min(p.durationSec),
         p.completed ? 'はい' : 'いいえ',
-        p.taskTimes
+        Math.max(0, intervals.length - 1),
+        intervals.map(iv => `${fmtDate(iv.startedAt)}〜${fmtDate(iv.endedAt)}`).join('; '),
+        (p.taskTimes || [])
           .map(tt => `${tt.taskId ? taskTitle(tt.taskId) : '(未割当)'}: ${min(tt.durationSec)}分`)
           .join('; ')
       ]);
@@ -140,9 +146,9 @@ ipcMain.handle('data:export', async (e, { format, data }) => {
     const rows = [['ID', 'タイトル', '状態', '作成日時', '完了日時', 'ポモドーロ数(完走)', '合計フォーカス(分)']];
     for (const t of data.tasks) {
       let pomos = 0, totalSec = 0;
-      for (const p of data.pomodoros) {
-        if (p.completed && p.taskIds.includes(t.id)) pomos++;
-        for (const tt of p.taskTimes) if (tt.taskId === t.id) totalSec += tt.durationSec;
+      for (const p of sessions) {
+        if (p.completed && (p.taskIds || []).includes(t.id)) pomos++;
+        for (const tt of (p.taskTimes || [])) if (tt.taskId === t.id) totalSec += tt.durationSec;
       }
       rows.push([
         t.id,

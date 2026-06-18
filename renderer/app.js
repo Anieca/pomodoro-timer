@@ -685,22 +685,28 @@ function renderFocusTask() {
 }
 
 /* ============ ホワイトノイズ ============ */
-// <audio loop> はループ境界で無音が入るため、サンプル精度でループする Web Audio を使う
+// <audio loop> はループ境界で無音が入るため、サンプル精度でループする Web Audio を使う。
+// 各音源は専用の GainNode を持つ(noiseGain = 現在の音源の gain)。これにより切替時に
+// 旧音源を独立してフェードアウトでき、共有 gain による重なり(旧音源が新音量で鳴る)を防ぐ。
 let noiseCtx = null;
-let noiseGain = null;
-let noiseSrc = null;
+let noiseGain = null;      // 現在再生中の音源の gain
+let noiseSrc = null;       // 現在再生中の音源
 let noisePlayingName = null;
 let noiseToken = 0;
 const noiseBuffers = new Map();
 
 function ensureNoiseCtx() {
-  if (!noiseCtx) {
-    noiseCtx = new AudioContext();
-    noiseGain = noiseCtx.createGain();
-    noiseGain.gain.value = 0;
-    noiseGain.connect(noiseCtx.destination);
-  }
+  if (!noiseCtx) noiseCtx = new AudioContext();
   if (noiseCtx.state === 'suspended') noiseCtx.resume();
+}
+
+// 指定の音源を自前の gain でフェードアウトして停止する(他の音源には影響しない)
+function fadeOutAndStop(src, gain) {
+  const t = noiseCtx.currentTime;
+  gain.gain.cancelScheduledValues(t);
+  gain.gain.setValueAtTime(gain.gain.value, t);
+  gain.gain.linearRampToValueAtTime(0, t + 0.15);
+  src.stop(t + 0.18);
 }
 
 async function noiseBuffer(name) {
@@ -714,6 +720,7 @@ async function noiseBuffer(name) {
 }
 
 function rampGain(target, sec) {
+  if (!noiseGain) return;
   const t = noiseCtx.currentTime;
   noiseGain.gain.cancelScheduledValues(t);
   noiseGain.gain.setValueAtTime(noiseGain.gain.value, t);
@@ -723,11 +730,10 @@ function rampGain(target, sec) {
 function stopNoise() {
   noiseToken++;
   if (!noiseSrc) return;
-  const src = noiseSrc;
+  fadeOutAndStop(noiseSrc, noiseGain);
   noiseSrc = null;
+  noiseGain = null;
   noisePlayingName = null;
-  rampGain(0, 0.12);
-  src.stop(noiseCtx.currentTime + 0.15);
 }
 
 async function startNoise(name, volume) {
@@ -736,15 +742,21 @@ async function startNoise(name, volume) {
   const buf = await noiseBuffer(name).catch(() => null);
   if (token !== noiseToken) return;
   if (!buf) return;
-  if (noiseSrc) { noiseSrc.stop(); noiseSrc = null; }
+  // 旧音源は自前の gain で独立してフェードアウト(新音源のフェードインと重ならない)
+  if (noiseSrc) fadeOutAndStop(noiseSrc, noiseGain);
+  const gain = noiseCtx.createGain();
+  gain.gain.value = 0;
+  gain.connect(noiseCtx.destination);
   const src = noiseCtx.createBufferSource();
   src.buffer = buf;
   src.loop = true;
-  src.connect(noiseGain);
-  rampGain(0, 0);
-  rampGain(volume, 0.15);
+  src.connect(gain);
+  const t = noiseCtx.currentTime;
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(volume, t + 0.15);
   src.start();
   noiseSrc = src;
+  noiseGain = gain;
   noisePlayingName = name;
 }
 
@@ -770,9 +782,8 @@ function updateNoise() {
   if (noiseSrc && noisePlayingName === sound.name) {
     rampGain(wn.volume / 100, 0.05);
   } else {
-    // 別音源へ切替時は現在の音を先に止める(新バッファの decode 中に旧音源が
-    // 鳴り続けて重なるのを防ぐ。例: フォーカス→休憩で休憩音源が未キャッシュの場合)
-    if (noiseSrc) stopNoise();
+    // 別音源へ切替。startNoise が旧音源を専用 gain で独立フェードアウトしつつ
+    // 新音源をフェードインする(短いクロスフェード。旧音源が新音量で混ざらない)。
     startNoise(sound.name, wn.volume / 100);
   }
 }

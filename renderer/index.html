@@ -93,11 +93,17 @@
       </div>
       <h3>ホワイトノイズ</h3>
       <div class="form-grid">
-        <label class="row-label"><input id="setNoiseOn" type="checkbox" /> フォーカス中に再生する</label>
-        <label>音源
+        <label class="row-label"><input id="setNoiseOn" type="checkbox" /> フォーカス・休憩中に再生する</label>
+        <label>フォーカス中の音源
           <div class="sound-row">
             <select id="setNoiseFile"></select>
             <button id="previewBtn" type="button" class="icon-btn">♪ 試聴</button>
+          </div>
+        </label>
+        <label>休憩中の音源
+          <div class="sound-row">
+            <select id="setNoiseBreakFile"></select>
+            <button id="previewBreakBtn" type="button" class="icon-btn">♪ 試聴</button>
           </div>
         </label>
         <label>音量 <span id="volLabel">50%</span>

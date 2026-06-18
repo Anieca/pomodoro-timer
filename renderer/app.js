@@ -7,7 +7,8 @@ const DEFAULT_SETTINGS = {
   longEvery: 4,
   autoStartBreak: false,
   autoStartWork: false,
-  whiteNoise: { enabled: true, file: 'white-noise.wav', volume: 50 }
+  // file=フォーカス中の音源, breakFile=休憩中の音源(enabled/volume は共有)
+  whiteNoise: { enabled: true, file: 'white-noise.wav', breakFile: 'white-noise.wav', volume: 50 }
 };
 
 let data = { tasks: [], sessions: [], settings: { ...DEFAULT_SETTINGS }, selectedTaskId: null };
@@ -684,22 +685,28 @@ function renderFocusTask() {
 }
 
 /* ============ ホワイトノイズ ============ */
-// <audio loop> はループ境界で無音が入るため、サンプル精度でループする Web Audio を使う
+// <audio loop> はループ境界で無音が入るため、サンプル精度でループする Web Audio を使う。
+// 各音源は専用の GainNode を持つ(noiseGain = 現在の音源の gain)。これにより切替時に
+// 旧音源を独立してフェードアウトでき、共有 gain による重なり(旧音源が新音量で鳴る)を防ぐ。
 let noiseCtx = null;
-let noiseGain = null;
-let noiseSrc = null;
+let noiseGain = null;      // 現在再生中の音源の gain
+let noiseSrc = null;       // 現在再生中の音源
 let noisePlayingName = null;
 let noiseToken = 0;
 const noiseBuffers = new Map();
 
 function ensureNoiseCtx() {
-  if (!noiseCtx) {
-    noiseCtx = new AudioContext();
-    noiseGain = noiseCtx.createGain();
-    noiseGain.gain.value = 0;
-    noiseGain.connect(noiseCtx.destination);
-  }
+  if (!noiseCtx) noiseCtx = new AudioContext();
   if (noiseCtx.state === 'suspended') noiseCtx.resume();
+}
+
+// 指定の音源を自前の gain でフェードアウトして停止する(他の音源には影響しない)
+function fadeOutAndStop(src, gain) {
+  const t = noiseCtx.currentTime;
+  gain.gain.cancelScheduledValues(t);
+  gain.gain.setValueAtTime(gain.gain.value, t);
+  gain.gain.linearRampToValueAtTime(0, t + 0.15);
+  src.stop(t + 0.18);
 }
 
 async function noiseBuffer(name) {
@@ -713,6 +720,7 @@ async function noiseBuffer(name) {
 }
 
 function rampGain(target, sec) {
+  if (!noiseGain) return;
   const t = noiseCtx.currentTime;
   noiseGain.gain.cancelScheduledValues(t);
   noiseGain.gain.setValueAtTime(noiseGain.gain.value, t);
@@ -722,35 +730,52 @@ function rampGain(target, sec) {
 function stopNoise() {
   noiseToken++;
   if (!noiseSrc) return;
-  const src = noiseSrc;
+  fadeOutAndStop(noiseSrc, noiseGain);
   noiseSrc = null;
+  noiseGain = null;
   noisePlayingName = null;
-  rampGain(0, 0.12);
-  src.stop(noiseCtx.currentTime + 0.15);
 }
 
 async function startNoise(name, volume) {
   ensureNoiseCtx();
   const token = ++noiseToken;
+  // 切替開始時に旧音源を先にフェードアウトする。decode 待ちや読み込み失敗時でも
+  // 旧音源が鳴り続けない。キャッシュ済みなら直後の decode は即時でギャップは出ない。
+  if (noiseSrc) {
+    fadeOutAndStop(noiseSrc, noiseGain);
+    noiseSrc = null;
+    noiseGain = null;
+    noisePlayingName = null;
+  }
   const buf = await noiseBuffer(name).catch(() => null);
   if (token !== noiseToken) return;
   if (!buf) return;
-  if (noiseSrc) { noiseSrc.stop(); noiseSrc = null; }
+  const gain = noiseCtx.createGain();
+  gain.gain.value = 0;
+  gain.connect(noiseCtx.destination);
   const src = noiseCtx.createBufferSource();
   src.buffer = buf;
   src.loop = true;
-  src.connect(noiseGain);
-  rampGain(0, 0);
-  rampGain(volume, 0.15);
+  src.connect(gain);
+  const t = noiseCtx.currentTime;
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(volume, t + 0.15);
   src.start();
   noiseSrc = src;
+  noiseGain = gain;
   noisePlayingName = name;
+}
+
+// 現在のモードで鳴らす音源ファイル名(work=フォーカス音源, 休憩=休憩音源)
+function noiseFileFor(mode) {
+  const wn = data.settings.whiteNoise;
+  return mode === 'work' ? wn.file : wn.breakFile;
 }
 
 function updateNoise() {
   const wn = data.settings.whiteNoise;
-  const sound = soundsCache.find(s => s.name === wn.file);
-  const active = timer.status === 'running' && timer.mode === 'work' && sound;
+  const sound = soundsCache.find(s => s.name === noiseFileFor(timer.mode));
+  const active = timer.status === 'running' && sound;
   const shouldPlay = active && wn.enabled;
   const ind = $('#noiseIndicator');
   ind.hidden = !active;
@@ -763,6 +788,8 @@ function updateNoise() {
   if (noiseSrc && noisePlayingName === sound.name) {
     rampGain(wn.volume / 100, 0.05);
   } else {
+    // 別音源へ切替。startNoise が旧音源を専用 gain で独立フェードアウトしつつ
+    // 新音源をフェードインする(短いクロスフェード。旧音源が新音量で混ざらない)。
     startNoise(sound.name, wn.volume / 100);
   }
 }
@@ -780,28 +807,33 @@ async function openSettings() {
   $('#setNoiseVol').value = s.whiteNoise.volume;
   $('#volLabel').textContent = `${s.whiteNoise.volume}%`;
 
-  const select = $('#setNoiseFile');
-  select.textContent = '';
   soundsCache = await window.api.listSounds();
+  populateSoundSelect($('#setNoiseFile'), s.whiteNoise.file);
+  populateSoundSelect($('#setNoiseBreakFile'), s.whiteNoise.breakFile);
+  $('#settingsModal').hidden = false;
+}
+
+// soundsCache から <option> を組み立てて選択状態を反映する
+function populateSoundSelect(select, selectedName) {
+  select.textContent = '';
   if (soundsCache.length === 0) {
     const opt = document.createElement('option');
     opt.value = '';
     opt.textContent = '音源がありません';
     select.appendChild(opt);
-  } else {
-    const none = document.createElement('option');
-    none.value = '';
-    none.textContent = '(未選択)';
-    select.appendChild(none);
-    for (const snd of soundsCache) {
-      const opt = document.createElement('option');
-      opt.value = snd.name;
-      opt.textContent = snd.name;
-      if (snd.name === s.whiteNoise.file) opt.selected = true;
-      select.appendChild(opt);
-    }
+    return;
   }
-  $('#settingsModal').hidden = false;
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = '(未選択)';
+  select.appendChild(none);
+  for (const snd of soundsCache) {
+    const opt = document.createElement('option');
+    opt.value = snd.name;
+    opt.textContent = snd.name;
+    if (snd.name === selectedName) opt.selected = true;
+    select.appendChild(opt);
+  }
 }
 
 function saveSettings() {
@@ -818,6 +850,7 @@ function saveSettings() {
   s.autoStartWork = $('#setAutoWork').checked;
   s.whiteNoise.enabled = $('#setNoiseOn').checked;
   s.whiteNoise.file = $('#setNoiseFile').value;
+  s.whiteNoise.breakFile = $('#setNoiseBreakFile').value;
   s.whiteNoise.volume = parseInt($('#setNoiseVol').value, 10) || 0;
   save();
   if (timer.status === 'idle') {
@@ -1053,8 +1086,8 @@ function toast(msg, action) {
 
 /* ============ 音源試聴 ============ */
 let previewTimer = null;
-function previewSound() {
-  const name = $('#setNoiseFile').value;
+function previewSound(selectSel) {
+  const name = $(selectSel).value;
   const sound = soundsCache.find(s => s.name === name);
   if (!sound) return;
   startNoise(sound.name, (parseInt($('#setNoiseVol').value, 10) || 0) / 100);
@@ -1081,7 +1114,8 @@ $('#taskForm').addEventListener('submit', e => {
 $('#startBtn').addEventListener('click', startPauseResume);
 $('#stopBtn').addEventListener('click', stopEarly);
 $('#skipBtn').addEventListener('click', skipBreak);
-$('#previewBtn').addEventListener('click', previewSound);
+$('#previewBtn').addEventListener('click', () => previewSound('#setNoiseFile'));
+$('#previewBreakBtn').addEventListener('click', () => previewSound('#setNoiseBreakFile'));
 $('#noiseIndicator').addEventListener('click', () => {
   data.settings.whiteNoise.enabled = !data.settings.whiteNoise.enabled;
   save();

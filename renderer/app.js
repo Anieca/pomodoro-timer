@@ -47,9 +47,14 @@ function migrateSessions(loaded) {
     mode: p.mode || 'work',
     taskIds: p.taskIds || [],
     taskTimes: p.taskTimes || [],
+    // 旧データは一時停止構造が復元不能。実働区間を durationSec 長に揃え、
+    // sum(intervals) === durationSec を保つ(plot で実働を過大計上しない)。
     intervals: p.intervals && p.intervals.length
       ? p.intervals
-      : [{ startedAt: p.startedAt, endedAt: p.endedAt }]
+      : [{
+          startedAt: p.startedAt,
+          endedAt: new Date(new Date(p.startedAt).getTime() + (p.durationSec || 0) * 1000).toISOString()
+        }]
   }));
 }
 

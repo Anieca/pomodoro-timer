@@ -32,12 +32,17 @@ await page.waitForSelector('#startBtn', { timeout: 15000 });
 await page.waitForTimeout(800);
 
 // 移行後の sessions 形状(taskTimes/intervals/mode が補われているか)
-const migrated = await page.evaluate(() => data.sessions.map(s => ({
-  mode: s.mode,
-  hasTaskTimes: Array.isArray(s.taskTimes),
-  hasTaskIds: Array.isArray(s.taskIds),
-  intervals: Array.isArray(s.intervals) ? s.intervals.length : null
-})));
+const migrated = await page.evaluate(() => data.sessions.map(s => {
+  const sumSec = s.intervals.reduce((a, iv) => a + (new Date(iv.endedAt) - new Date(iv.startedAt)) / 1000, 0);
+  return {
+    mode: s.mode,
+    hasTaskTimes: Array.isArray(s.taskTimes),
+    hasTaskIds: Array.isArray(s.taskIds),
+    intervals: Array.isArray(s.intervals) ? s.intervals.length : null,
+    durationSec: s.durationSec,
+    intervalSumSec: Math.round(sumSec)
+  };
+}));
 
 // taskStats(旧コードでクラッシュした経路)が例外なく回るか
 const statOk = await page.evaluate(() => {
@@ -61,6 +66,7 @@ assert(migrated.length === 2, 'both old records migrated');
 assert(migrated.every(s => s.mode === 'work'), 'mode defaulted to work');
 assert(migrated.every(s => s.hasTaskTimes && s.hasTaskIds), 'taskTimes/taskIds normalized to arrays');
 assert(migrated.every(s => s.intervals === 1), 'synthesized one interval per record');
+assert(migrated.every(s => s.intervalSumSec === s.durationSec), 'interval length equals durationSec (no over-count)');
 assert(statOk, 'taskStats runs without throwing');
 assert(historyText.length > 0, 'history rendered without throwing');
 assert(errors.length === 0, 'no console/page errors');

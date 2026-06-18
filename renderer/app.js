@@ -7,7 +7,8 @@ const DEFAULT_SETTINGS = {
   longEvery: 4,
   autoStartBreak: false,
   autoStartWork: false,
-  whiteNoise: { enabled: true, file: 'white-noise.wav', volume: 50 }
+  // file=フォーカス中の音源, breakFile=休憩中の音源(enabled/volume は共有)
+  whiteNoise: { enabled: true, file: 'white-noise.wav', breakFile: 'white-noise.wav', volume: 50 }
 };
 
 let data = { tasks: [], sessions: [], settings: { ...DEFAULT_SETTINGS }, selectedTaskId: null };
@@ -747,10 +748,16 @@ async function startNoise(name, volume) {
   noisePlayingName = name;
 }
 
+// 現在のモードで鳴らす音源ファイル名(work=フォーカス音源, 休憩=休憩音源)
+function noiseFileFor(mode) {
+  const wn = data.settings.whiteNoise;
+  return mode === 'work' ? wn.file : wn.breakFile;
+}
+
 function updateNoise() {
   const wn = data.settings.whiteNoise;
-  const sound = soundsCache.find(s => s.name === wn.file);
-  const active = timer.status === 'running' && timer.mode === 'work' && sound;
+  const sound = soundsCache.find(s => s.name === noiseFileFor(timer.mode));
+  const active = timer.status === 'running' && sound;
   const shouldPlay = active && wn.enabled;
   const ind = $('#noiseIndicator');
   ind.hidden = !active;
@@ -780,28 +787,33 @@ async function openSettings() {
   $('#setNoiseVol').value = s.whiteNoise.volume;
   $('#volLabel').textContent = `${s.whiteNoise.volume}%`;
 
-  const select = $('#setNoiseFile');
-  select.textContent = '';
   soundsCache = await window.api.listSounds();
+  populateSoundSelect($('#setNoiseFile'), s.whiteNoise.file);
+  populateSoundSelect($('#setNoiseBreakFile'), s.whiteNoise.breakFile);
+  $('#settingsModal').hidden = false;
+}
+
+// soundsCache から <option> を組み立てて選択状態を反映する
+function populateSoundSelect(select, selectedName) {
+  select.textContent = '';
   if (soundsCache.length === 0) {
     const opt = document.createElement('option');
     opt.value = '';
     opt.textContent = '音源がありません';
     select.appendChild(opt);
-  } else {
-    const none = document.createElement('option');
-    none.value = '';
-    none.textContent = '(未選択)';
-    select.appendChild(none);
-    for (const snd of soundsCache) {
-      const opt = document.createElement('option');
-      opt.value = snd.name;
-      opt.textContent = snd.name;
-      if (snd.name === s.whiteNoise.file) opt.selected = true;
-      select.appendChild(opt);
-    }
+    return;
   }
-  $('#settingsModal').hidden = false;
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = '(未選択)';
+  select.appendChild(none);
+  for (const snd of soundsCache) {
+    const opt = document.createElement('option');
+    opt.value = snd.name;
+    opt.textContent = snd.name;
+    if (snd.name === selectedName) opt.selected = true;
+    select.appendChild(opt);
+  }
 }
 
 function saveSettings() {
@@ -818,6 +830,7 @@ function saveSettings() {
   s.autoStartWork = $('#setAutoWork').checked;
   s.whiteNoise.enabled = $('#setNoiseOn').checked;
   s.whiteNoise.file = $('#setNoiseFile').value;
+  s.whiteNoise.breakFile = $('#setNoiseBreakFile').value;
   s.whiteNoise.volume = parseInt($('#setNoiseVol').value, 10) || 0;
   save();
   if (timer.status === 'idle') {
@@ -1053,8 +1066,8 @@ function toast(msg, action) {
 
 /* ============ 音源試聴 ============ */
 let previewTimer = null;
-function previewSound() {
-  const name = $('#setNoiseFile').value;
+function previewSound(selectSel) {
+  const name = $(selectSel).value;
   const sound = soundsCache.find(s => s.name === name);
   if (!sound) return;
   startNoise(sound.name, (parseInt($('#setNoiseVol').value, 10) || 0) / 100);
@@ -1081,7 +1094,8 @@ $('#taskForm').addEventListener('submit', e => {
 $('#startBtn').addEventListener('click', startPauseResume);
 $('#stopBtn').addEventListener('click', stopEarly);
 $('#skipBtn').addEventListener('click', skipBreak);
-$('#previewBtn').addEventListener('click', previewSound);
+$('#previewBtn').addEventListener('click', () => previewSound('#setNoiseFile'));
+$('#previewBreakBtn').addEventListener('click', () => previewSound('#setNoiseBreakFile'));
 $('#noiseIndicator').addEventListener('click', () => {
   data.settings.whiteNoise.enabled = !data.settings.whiteNoise.enabled;
   save();

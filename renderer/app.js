@@ -930,12 +930,13 @@ function sessionLabel(s) {
 
 // 指定日に重なる実働区間を、その日の枠[0:00, 翌0:00)にクリップして列挙する。
 // startMin/endMin は当日0:00からの分。日をまたぐ区間も正しく扱える。
+// 注: タイムテーブルは「0:00〜翌0:00 の壁時計軸」を前提とする。本アプリの対象である
+// JST など DST の無いタイムゾーンでは厳密に正しい。DST 切替日(23/25時間)は対象外。
 function dayBlocks(day) {
   const dayStart = day.getTime();
   const next = new Date(day);
-  next.setDate(next.getDate() + 1);                      // DST 対応: 次のローカル0:00
+  next.setDate(next.getDate() + 1);                      // ローカル日付の翌0:00
   const dayEnd = next.getTime();
-  // 0:00 からの分位置は壁時計で求める(DST 日でもグリッドの時刻軸と一致させる)
   const wallMin = ms => { const d = new Date(ms); return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60; };
   const out = [];
   for (const s of data.sessions) {
@@ -1021,7 +1022,7 @@ function openTimeline() {
 
 function shiftTimelineDay(days) {
   const d = new Date(timelineDay);
-  d.setDate(d.getDate() + days);                         // DST 対応: ローカル日付で前後
+  d.setDate(d.getDate() + days);                         // ローカル日付で前後(月跨ぎも安全)
   timelineDay = startOfDay(d);
   renderTimeline();
 }

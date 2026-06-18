@@ -739,11 +739,17 @@ function stopNoise() {
 async function startNoise(name, volume) {
   ensureNoiseCtx();
   const token = ++noiseToken;
+  // 切替開始時に旧音源を先にフェードアウトする。decode 待ちや読み込み失敗時でも
+  // 旧音源が鳴り続けない。キャッシュ済みなら直後の decode は即時でギャップは出ない。
+  if (noiseSrc) {
+    fadeOutAndStop(noiseSrc, noiseGain);
+    noiseSrc = null;
+    noiseGain = null;
+    noisePlayingName = null;
+  }
   const buf = await noiseBuffer(name).catch(() => null);
   if (token !== noiseToken) return;
   if (!buf) return;
-  // 旧音源は自前の gain で独立してフェードアウト(新音源のフェードインと重ならない)
-  if (noiseSrc) fadeOutAndStop(noiseSrc, noiseGain);
   const gain = noiseCtx.createGain();
   gain.gain.value = 0;
   gain.connect(noiseCtx.destination);

@@ -932,7 +932,11 @@ function sessionLabel(s) {
 // startMin/endMin は当日0:00からの分。日をまたぐ区間も正しく扱える。
 function dayBlocks(day) {
   const dayStart = day.getTime();
-  const dayEnd = dayStart + 86400000;
+  const next = new Date(day);
+  next.setDate(next.getDate() + 1);                      // DST 対応: 次のローカル0:00
+  const dayEnd = next.getTime();
+  // 0:00 からの分位置は壁時計で求める(DST 日でもグリッドの時刻軸と一致させる)
+  const wallMin = ms => { const d = new Date(ms); return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60; };
   const out = [];
   for (const s of data.sessions) {
     for (const iv of sessionIntervals(s)) {
@@ -944,8 +948,8 @@ function dayBlocks(day) {
       if (ce <= cs) continue;                            // 0分/不正区間は除外
       out.push({
         session: s,
-        startMin: (cs - dayStart) / 60000,
-        endMin: (ce - dayStart) / 60000,
+        startMin: cs === dayStart ? 0 : wallMin(cs),
+        endMin: ce === dayEnd ? 1440 : wallMin(ce),
         trueStart: new Date(st),
         trueEnd: new Date(en),
         spansIn: st < dayStart,                          // 前日から継続
@@ -1016,7 +1020,9 @@ function openTimeline() {
 }
 
 function shiftTimelineDay(days) {
-  timelineDay = startOfDay(new Date(timelineDay.getTime() + days * 86400000));
+  const d = new Date(timelineDay);
+  d.setDate(d.getDate() + days);                         // DST 対応: ローカル日付で前後
+  timelineDay = startOfDay(d);
   renderTimeline();
 }
 

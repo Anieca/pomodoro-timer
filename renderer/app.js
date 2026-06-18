@@ -10,10 +10,12 @@ const DEFAULT_SETTINGS = {
   whiteNoise: { enabled: true, file: 'white-noise.wav', volume: 50 }
 };
 
-let data = { tasks: [], pomodoros: [], settings: { ...DEFAULT_SETTINGS }, selectedTaskId: null };
+let data = { tasks: [], sessions: [], settings: { ...DEFAULT_SETTINGS }, selectedTaskId: null };
 let soundsCache = [];
 
-// timer.current: 実行中ポモドーロ { id, startedAt, taskIds: [] }
+// timer.current: 実行中セッション
+//   { id, mode, startedAt, intervals: [{startedAt,endedAt}], intStartAt, segments, segTaskId, segStartMs }
+// intervals は一時停止で区切られた実働区間。タイムブロックへの plot 用に壁時計の絶対時刻を保持する。
 const timer = {
   mode: 'work',          // 'work' | 'short' | 'long'
   status: 'idle',        // 'idle' | 'running' | 'paused'
@@ -37,13 +39,32 @@ function modeDurationMs(mode) {
   return min * 60 * 1000;
 }
 
+// 旧 data.pomodoros(フォーカスのみ・区間情報なし)を sessions 形式へ移行
+function migrateSessions(loaded) {
+  if (Array.isArray(loaded.sessions)) return loaded.sessions;
+  return (loaded.pomodoros || []).map(p => ({
+    ...p,
+    mode: p.mode || 'work',
+    taskIds: p.taskIds || [],
+    taskTimes: p.taskTimes || [],
+    // 旧データは一時停止構造が復元不能。実働区間を durationSec 長に揃え、
+    // sum(intervals) === durationSec を保つ(plot で実働を過大計上しない)。
+    intervals: p.intervals && p.intervals.length
+      ? p.intervals
+      : [{
+          startedAt: p.startedAt,
+          endedAt: new Date(new Date(p.startedAt).getTime() + (p.durationSec || 0) * 1000).toISOString()
+        }]
+  }));
+}
+
 /* ============ 初期化 ============ */
 async function init() {
   const loaded = await window.api.loadData();
   if (loaded) {
     data = {
       tasks: loaded.tasks || [],
-      pomodoros: loaded.pomodoros || [],
+      sessions: migrateSessions(loaded),
       selectedTaskId: loaded.selectedTaskId || null,
       settings: {
         ...DEFAULT_SETTINGS,
@@ -72,12 +93,12 @@ function renderAll() {
 /* ============ タスク ============ */
 function taskStats(taskId) {
   let pomos = 0, sec = 0;
-  for (const p of data.pomodoros) {
+  for (const p of data.sessions) {
     if (p.completed && p.taskIds.includes(taskId)) pomos++;
     for (const tt of p.taskTimes) if (tt.taskId === taskId) sec += tt.durationSec;
   }
   // 進行中のポモドーロの時間もリアルタイムに反映
-  if (timer.current) {
+  if (timer.current && timer.current.mode === 'work') {
     for (const s of timer.current.segments) if (s.taskId === taskId) sec += s.durationSec;
     if (timer.current.segTaskId === taskId) {
       sec += Math.max(0, (pomoElapsedMs() - timer.current.segStartMs) / 1000);
@@ -218,6 +239,20 @@ function pomoElapsedMs() {
   return timer.totalMs - timer.remainMs;
 }
 
+// 実働区間を開く/閉じる(一時停止・再開・終了の境界で壁時計の絶対時刻を記録)
+function openInterval() {
+  if (timer.current) timer.current.intStartAt = Date.now();
+}
+function closeInterval() {
+  const c = timer.current;
+  if (!c || !c.intStartAt) return;
+  c.intervals.push({
+    startedAt: new Date(c.intStartAt).toISOString(),
+    endedAt: new Date().toISOString()
+  });
+  c.intStartAt = null;
+}
+
 // 現在のセグメントを確定して segments に積む
 function closeSegment() {
   const c = timer.current;
@@ -229,7 +264,7 @@ function closeSegment() {
 // タスク切り替え地点でセグメントを区切る(タイマーは止めない)
 function switchSegment(taskId) {
   const c = timer.current;
-  if (!c || c.segTaskId === (taskId || null)) return;
+  if (!c || c.mode !== 'work' || c.segTaskId === (taskId || null)) return;
   closeSegment();
   c.segTaskId = taskId || null;
   c.segStartMs = pomoElapsedMs();
@@ -272,7 +307,7 @@ function deleteTask(id) {
     segPatches: []
   };
   data.tasks.splice(idx, 1);
-  for (const p of data.pomodoros) {
+  for (const p of data.sessions) {
     p.taskIds = p.taskIds.filter(tid => tid !== id);
     (p.taskTimes || []).forEach((tt, i) => {
       if (tt.taskId === id) {
@@ -355,10 +390,10 @@ function renderCycleDots() {
 
 function renderTodayCount() {
   const today = new Date().toDateString();
-  const todays = data.pomodoros.filter(p => new Date(p.startedAt).toDateString() === today);
-  let sec = todays.reduce((s, p) => s + p.durationSec, 0);
-  if (timer.current) sec += pomoElapsedMs() / 1000;
-  $('#todayCount').textContent = String(todays.filter(p => p.completed).length);
+  const work = data.sessions.filter(p => p.mode === 'work' && new Date(p.startedAt).toDateString() === today);
+  let sec = work.reduce((s, p) => s + p.durationSec, 0);
+  if (timer.current && timer.current.mode === 'work') sec += pomoElapsedMs() / 1000;
+  $('#todayCount').textContent = String(work.filter(p => p.completed).length);
   $('#todayMin').textContent = String(Math.round(sec / 60));
 }
 
@@ -367,23 +402,26 @@ function startPauseResume() {
     timer.totalMs = modeDurationMs(timer.mode);
     timer.endAt = Date.now() + timer.totalMs;
     timer.status = 'running';
-    if (timer.mode === 'work') {
-      timer.current = {
-        id: uid(),
-        startedAt: new Date().toISOString(),
-        segments: [],
-        segTaskId: data.selectedTaskId || null,
-        segStartMs: 0
-      };
-    }
+    timer.current = {
+      id: uid(),
+      mode: timer.mode,
+      startedAt: new Date().toISOString(),
+      intervals: [],
+      intStartAt: Date.now(),
+      segments: [],
+      segTaskId: timer.mode === 'work' ? (data.selectedTaskId || null) : null,
+      segStartMs: 0
+    };
     timer.intervalId = setInterval(tick, 250);
   } else if (timer.status === 'running') {
     timer.remainMs = Math.max(0, timer.endAt - Date.now());
     timer.status = 'paused';
     clearInterval(timer.intervalId);
+    closeInterval();
   } else {
     timer.endAt = Date.now() + timer.remainMs;
     timer.status = 'running';
+    openInterval();
     timer.intervalId = setInterval(tick, 250);
   }
   renderTimer();
@@ -412,25 +450,33 @@ function stopEarly() {
   finishSession(false);
 }
 
-// 実行中ポモドーロを記録に積む(1分未満の中断は記録しない)
-function recordCurrentPomodoro(completed) {
-  if (!timer.current) return;
-  const elapsedSec = Math.round(pomoElapsedMs() / 1000);
-  closeSegment();
+// 実行中セッション(フォーカス/休憩)を記録に積む(1分未満の中断は記録しない)
+function recordSession(completed) {
+  const c = timer.current;
+  if (!c) return;
+  closeInterval();
+  const activeMs = c.intervals.reduce((s, iv) => s + (new Date(iv.endedAt) - new Date(iv.startedAt)), 0);
+  const elapsedSec = Math.round(activeMs / 1000);
   if (!completed && elapsedSec < 60) return;
-  // セグメントをタスク別に集計
-  const byTask = new Map();
-  for (const s of timer.current.segments) {
-    byTask.set(s.taskId, (byTask.get(s.taskId) || 0) + s.durationSec);
+
+  let taskTimes = [], taskIds = [];
+  if (c.mode === 'work') {
+    closeSegment();
+    // セグメントをタスク別に集計
+    const byTask = new Map();
+    for (const s of c.segments) byTask.set(s.taskId, (byTask.get(s.taskId) || 0) + s.durationSec);
+    taskTimes = [...byTask.entries()].map(([taskId, durationSec]) => ({ taskId, durationSec }));
+    taskIds = taskTimes.filter(tt => tt.taskId).map(tt => tt.taskId);
   }
-  const taskTimes = [...byTask.entries()].map(([taskId, durationSec]) => ({ taskId, durationSec }));
-  data.pomodoros.push({
-    id: timer.current.id,
-    startedAt: timer.current.startedAt,
-    endedAt: new Date().toISOString(),
+  data.sessions.push({
+    id: c.id,
+    mode: c.mode,
+    startedAt: c.startedAt,
+    endedAt: c.intervals.length ? c.intervals[c.intervals.length - 1].endedAt : new Date().toISOString(),
     durationSec: elapsedSec,
     completed,
-    taskIds: taskTimes.filter(tt => tt.taskId).map(tt => tt.taskId),
+    intervals: c.intervals,
+    taskIds,
     taskTimes
   });
   save();
@@ -440,9 +486,9 @@ function finishSession(completed) {
   clearInterval(timer.intervalId);
   const wasWork = timer.mode === 'work';
 
-  if (wasWork && timer.current) {
-    recordCurrentPomodoro(completed);
-    if (completed) timer.cycle++;
+  if (timer.current) {
+    recordSession(completed);
+    if (wasWork && completed) timer.cycle++;
   }
 
   timer.current = null;
@@ -475,6 +521,9 @@ function finishSession(completed) {
 function skipBreak() {
   if (timer.mode === 'work') return;
   clearInterval(timer.intervalId);
+  // スキップ時点までの休憩は実時間として記録(1分未満は破棄)
+  if (timer.current) recordSession(false);
+  timer.current = null;
   timer.status = 'idle';
   timer.mode = 'work';
   timer.remainMs = modeDurationMs('work');
@@ -778,11 +827,11 @@ function saveSettings() {
 function renderHistory() {
   const list = $('#historyList');
   list.textContent = '';
-  const items = [...data.pomodoros].reverse();
+  const items = [...data.sessions].reverse();
   if (items.length === 0) {
     const li = document.createElement('li');
     li.className = 'empty-note';
-    li.textContent = 'まだポモドーロの記録がありません';
+    li.textContent = 'まだ記録がありません';
     list.appendChild(li);
     return;
   }
@@ -796,49 +845,65 @@ function renderHistory() {
     const d = new Date(iso);
     return `${d.getMonth() + 1}/${d.getDate()} (${WD[d.getDay()]})`;
   };
+  const sumMin = arr => Math.round(arr.reduce((s, x) => s + x.durationSec, 0) / 60);
   let curDay = null;
   for (const p of items) {
     const day = new Date(p.startedAt).toDateString();
     if (day !== curDay) {
       curDay = day;
       const sameDay = items.filter(x => new Date(x.startedAt).toDateString() === day);
-      const totalMin = Math.round(sameDay.reduce((s, x) => s + x.durationSec, 0) / 60);
+      const work = sameDay.filter(x => x.mode === 'work');
+      const breaks = sameDay.filter(x => x.mode !== 'work');
       const h = document.createElement('li');
       h.className = 'history-day';
-      h.textContent = `${fmtDay(p.startedAt)} — ${sameDay.filter(x => x.completed).length}🍅 · ${totalMin}分`;
+      h.textContent = `${fmtDay(p.startedAt)} — ${work.filter(x => x.completed).length}🍅 · 集中${sumMin(work)}分 · 休憩${sumMin(breaks)}分`;
       list.appendChild(h);
     }
+    const isWork = p.mode === 'work';
     const li = document.createElement('li');
-    li.className = 'history-item';
+    li.className = 'history-item' + (isWork ? '' : ' break');
 
     const head = document.createElement('div');
     head.className = 'history-head';
     const when = document.createElement('span');
     when.className = 'history-when';
-    when.textContent = `${fmtTime(p.startedAt)} → ${fmtTime(p.endedAt)}`;
+    const tag = document.createElement('span');
+    tag.className = 'history-mode';
+    tag.textContent = MODE_LABEL[p.mode] || p.mode;
+    when.append(tag, document.createTextNode(`${fmtTime(p.startedAt)} → ${fmtTime(p.endedAt)}`));
+    const pauses = (p.intervals ? p.intervals.length : 1) - 1;
+    if (pauses > 0) {
+      const pz = document.createElement('span');
+      pz.className = 'history-pause';
+      pz.textContent = `⏸${pauses}`;
+      pz.title = `一時停止 ${pauses}回`;
+      when.appendChild(pz);
+    }
     const dur = document.createElement('span');
     dur.className = 'history-dur';
     const min = Math.round(p.durationSec / 60);
     dur.innerHTML = `${min}分 <span class="${p.completed ? 'ok' : 'ng'}">${p.completed ? '完走' : '中断'}</span>`;
     head.append(when, dur);
+    li.appendChild(head);
 
     const fmtMin = sec => { const m = Math.round(sec / 60); return m > 0 ? `${m}分` : '1分未満'; };
-    const tasksRow = document.createElement('div');
-    tasksRow.className = 'history-tasks';
-    for (const tt of p.taskTimes) {
-      const chip = document.createElement('span');
-      if (tt.taskId === null) {
-        chip.className = 'chip empty';
-        chip.textContent = `タスクなし · ${fmtMin(tt.durationSec)}`;
-      } else {
-        chip.className = 'chip';
-        const t = data.tasks.find(t => t.id === tt.taskId);
-        chip.textContent = `${t ? t.title : '(削除済み)'} · ${fmtMin(tt.durationSec)}`;
+    if (isWork) {
+      const tasksRow = document.createElement('div');
+      tasksRow.className = 'history-tasks';
+      for (const tt of p.taskTimes) {
+        const chip = document.createElement('span');
+        if (tt.taskId === null) {
+          chip.className = 'chip empty';
+          chip.textContent = `タスクなし · ${fmtMin(tt.durationSec)}`;
+        } else {
+          chip.className = 'chip';
+          const t = data.tasks.find(t => t.id === tt.taskId);
+          chip.textContent = `${t ? t.title : '(削除済み)'} · ${fmtMin(tt.durationSec)}`;
+        }
+        tasksRow.appendChild(chip);
       }
-      tasksRow.appendChild(chip);
+      li.appendChild(tasksRow);
     }
-
-    li.append(head, tasksRow);
     list.appendChild(li);
   }
 }
@@ -969,9 +1034,9 @@ document.querySelectorAll('.modal-backdrop').forEach(m => {
   });
 });
 
-// アプリ終了・リロード時、実行中のポモドーロを中断として記録(1分以上のもの)
+// アプリ終了・リロード時、実行中のセッションを中断として記録(1分以上のもの)
 window.addEventListener('beforeunload', () => {
-  if (timer.mode === 'work' && timer.current) recordCurrentPomodoro(false);
+  if (timer.current) recordSession(false);
 });
 
 init();

@@ -351,9 +351,16 @@ body.focusing .sidebar:hover, body.focusing .topbar:hover { opacity: 1; }
   background: var(--bg-card); border: 1px solid var(--line); border-radius: 12px;
   padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;
 }
-.history-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
-.history-when { color: var(--cream); font-weight: 500; }
-.history-dur { color: var(--cream-dim); }
+.history-item.break { border-left: 3px solid var(--sage); }
+.history-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; gap: 8px; }
+.history-when { color: var(--cream); font-weight: 500; display: inline-flex; align-items: center; gap: 8px; }
+.history-mode {
+  font-size: 10px; letter-spacing: 0.08em; color: var(--cream-dim);
+  border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px;
+}
+.history-item.break .history-mode { color: var(--sage); border-color: var(--sage); }
+.history-pause { font-size: 11px; color: var(--gold); }
+.history-dur { color: var(--cream-dim); white-space: nowrap; }
 .history-dur .ok { color: var(--sage); }
 .history-dur .ng { color: var(--gold); }
 .history-tasks { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }

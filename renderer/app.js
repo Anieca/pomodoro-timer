@@ -770,6 +770,9 @@ function updateNoise() {
   if (noiseSrc && noisePlayingName === sound.name) {
     rampGain(wn.volume / 100, 0.05);
   } else {
+    // 別音源へ切替時は現在の音を先に止める(新バッファの decode 中に旧音源が
+    // 鳴り続けて重なるのを防ぐ。例: フォーカス→休憩で休憩音源が未キャッシュの場合)
+    if (noiseSrc) stopNoise();
     startNoise(sound.name, wn.volume / 100);
   }
 }

@@ -29,7 +29,8 @@ const errors = [];
 page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
 page.on('pageerror', e => errors.push(String(e)));
 await page.waitForSelector('#startBtn', { timeout: 15000 });
-await page.waitForTimeout(800);
+// app.js の評価(移行を含む)完了を待つ
+await page.waitForFunction(() => typeof data !== 'undefined' && Array.isArray(data.sessions), { timeout: 15000 });
 
 // 移行後の sessions 形状(taskTimes/intervals/mode が補われているか)
 const migrated = await page.evaluate(() => data.sessions.map(s => {

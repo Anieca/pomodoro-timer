@@ -15,7 +15,8 @@ const app = await electron.launch({
 });
 const page = await app.firstWindow();
 await page.waitForSelector('#startBtn', { timeout: 15000 });
-await page.waitForTimeout(800);
+// app.js の評価完了を待つ(#startBtn は静的 HTML で先に出るため固定待ちはレースになる)
+await page.waitForFunction(() => typeof data !== 'undefined' && Array.isArray(data.sessions), { timeout: 15000 });
 
 const errors = [];
 page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });

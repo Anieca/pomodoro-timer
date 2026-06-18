@@ -47,6 +47,7 @@
           <button data-mode="long">長休憩</button>
         </nav>
         <div class="top-actions">
+          <button id="timelineBtn" class="icon-btn" title="タイムテーブル">タイムテーブル</button>
           <button id="historyBtn" class="icon-btn" title="履歴">履歴</button>
           <button id="settingsBtn" class="icon-btn" title="設定">設定</button>
         </div>
@@ -126,6 +127,25 @@
           </div>
         </div>
         <button id="historyClose" class="primary-btn">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======= タイムテーブルモーダル ======= -->
+  <div class="modal-backdrop" id="timelineModal" hidden>
+    <div class="modal modal-wide">
+      <div class="timeline-header">
+        <h2>タイムテーブル</h2>
+        <div class="timeline-nav">
+          <button id="tlPrev" class="ghost-btn" title="前の日">‹</button>
+          <span id="tlDate" class="timeline-date"></span>
+          <button id="tlNext" class="ghost-btn" title="次の日">›</button>
+          <button id="tlToday" class="ghost-btn">今日</button>
+        </div>
+      </div>
+      <div id="timelineBody" class="timeline-body"></div>
+      <div class="modal-actions">
+        <button id="timelineClose" class="primary-btn">閉じる</button>
       </div>
     </div>
   </div>

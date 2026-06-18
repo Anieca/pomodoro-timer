@@ -31,7 +31,13 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const save = () => window.api.saveData(data);
 
 const MODE_LABEL = { work: 'フォーカス', short: '小休憩', long: '長休憩' };
+const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 const RING_LEN = 2 * Math.PI * 132;
+
+// セッションの実働区間(古い記録は span をフォールバック)
+const sessionIntervals = s => (s.intervals && s.intervals.length ? s.intervals : [{ startedAt: s.startedAt, endedAt: s.endedAt }]);
+// Date → "HH:MM"
+const fmtClock = d => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
 function modeDurationMs(mode) {
   const s = data.settings;
@@ -835,15 +841,10 @@ function renderHistory() {
     list.appendChild(li);
     return;
   }
-  const fmtTime = iso => {
-    const d = new Date(iso);
-    const p = n => String(n).padStart(2, '0');
-    return `${p(d.getHours())}:${p(d.getMinutes())}`;
-  };
-  const WD = ['日', '月', '火', '水', '木', '金', '土'];
+  const fmtTime = iso => fmtClock(new Date(iso));
   const fmtDay = iso => {
     const d = new Date(iso);
-    return `${d.getMonth() + 1}/${d.getDate()} (${WD[d.getDay()]})`;
+    return `${d.getMonth() + 1}/${d.getDate()} (${WEEKDAYS[d.getDay()]})`;
   };
   const sumMin = arr => Math.round(arr.reduce((s, x) => s + x.durationSec, 0) / 60);
   let curDay = null;
@@ -906,6 +907,124 @@ function renderHistory() {
     }
     list.appendChild(li);
   }
+}
+
+/* ============ タイムテーブル(1日ビュー) ============ */
+const TL_PX_PER_MIN = 1.4;            // 1時間 ≈ 84px
+let timelineDay = startOfDay(new Date());
+
+function startOfDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+// セッションの主タスク名(最も長く充てたタスク)。休憩はモード名。
+function sessionLabel(s) {
+  if (s.mode !== 'work') return MODE_LABEL[s.mode] || s.mode;
+  const tt = (s.taskTimes || []).filter(x => x.taskId).sort((a, b) => b.durationSec - a.durationSec)[0];
+  if (!tt) return 'フォーカス';
+  const t = data.tasks.find(t => t.id === tt.taskId);
+  return t ? t.title : '(削除済み)';
+}
+
+// 指定日に重なる実働区間を、その日の枠[0:00, 翌0:00)にクリップして列挙する。
+// startMin/endMin は当日0:00からの分。日をまたぐ区間も正しく扱える。
+// 注: タイムテーブルは「0:00〜翌0:00 の壁時計軸」を前提とする。本アプリの対象である
+// JST など DST の無いタイムゾーンでは厳密に正しい。DST 切替日(23/25時間)は対象外。
+function dayBlocks(day) {
+  const dayStart = day.getTime();
+  const next = new Date(day);
+  next.setDate(next.getDate() + 1);                      // ローカル日付の翌0:00
+  const dayEnd = next.getTime();
+  const wallMin = ms => { const d = new Date(ms); return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60; };
+  const out = [];
+  for (const s of data.sessions) {
+    for (const iv of sessionIntervals(s)) {
+      const st = new Date(iv.startedAt).getTime();
+      const en = new Date(iv.endedAt).getTime();
+      if (!(st < dayEnd && en > dayStart)) continue;     // 当日に重ならない
+      const cs = Math.max(st, dayStart);                 // 当日枠にクリップ
+      const ce = Math.min(en, dayEnd);
+      if (ce <= cs) continue;                            // 0分/不正区間は除外
+      out.push({
+        session: s,
+        startMin: cs === dayStart ? 0 : wallMin(cs),
+        endMin: ce === dayEnd ? 1440 : wallMin(ce),
+        trueStart: new Date(st),
+        trueEnd: new Date(en),
+        spansIn: st < dayStart,                          // 前日から継続
+        spansOut: en > dayEnd                            // 翌日へ継続
+      });
+    }
+  }
+  return out;
+}
+
+function renderTimeline() {
+  const body = $('#timelineBody');
+  body.textContent = '';
+  $('#tlDate').textContent =
+    `${timelineDay.getFullYear()}/${timelineDay.getMonth() + 1}/${timelineDay.getDate()} (${WEEKDAYS[timelineDay.getDay()]})`;
+
+  const blocks = dayBlocks(timelineDay);
+  if (blocks.length === 0) {
+    const note = document.createElement('div');
+    note.className = 'empty-note';
+    note.textContent = 'この日の記録はありません';
+    body.appendChild(note);
+    return;
+  }
+
+  let lo = Infinity, hi = -Infinity;
+  for (const b of blocks) { lo = Math.min(lo, b.startMin); hi = Math.max(hi, b.endMin); }
+  const startHour = Math.floor(lo / 60);
+  const endHour = Math.min(24, Math.ceil(hi / 60));
+  const rangeStartMin = startHour * 60;
+  const totalMin = Math.max(60, (endHour - startHour) * 60);
+
+  const grid = document.createElement('div');
+  grid.className = 'timeline-grid';
+  grid.style.height = (totalMin * TL_PX_PER_MIN) + 'px';
+
+  for (let h = startHour; h <= endHour; h++) {
+    const line = document.createElement('div');
+    line.className = 'timeline-hour';
+    line.style.top = ((h * 60 - rangeStartMin) * TL_PX_PER_MIN) + 'px';
+    const lab = document.createElement('span');
+    lab.className = 'timeline-hour-label';
+    lab.textContent = String(h % 24).padStart(2, '0') + ':00';
+    line.appendChild(lab);
+    grid.appendChild(line);
+  }
+
+  for (const b of blocks) {
+    const top = (b.startMin - rangeStartMin) * TL_PX_PER_MIN;
+    const height = Math.max(3, (b.endMin - b.startMin) * TL_PX_PER_MIN);
+    const el = document.createElement('div');
+    el.className = 'timeline-block' + (b.session.mode === 'work' ? '' : ' break');
+    el.style.top = top + 'px';
+    el.style.height = height + 'px';
+    // 低すぎるブロックはラベルが潰れるので省略(詳細は title で保持)
+    const cont = (b.spansIn ? '↑' : '') + (b.spansOut ? '↓' : '');
+    if (height >= 16) el.textContent = (cont ? cont + ' ' : '') + sessionLabel(b.session);
+    el.title = `${MODE_LABEL[b.session.mode] || b.session.mode} ${fmtClock(b.trueStart)}–${fmtClock(b.trueEnd)} · ${sessionLabel(b.session)}`;
+    grid.appendChild(el);
+  }
+  body.appendChild(grid);
+}
+
+function openTimeline() {
+  timelineDay = startOfDay(new Date());
+  renderTimeline();
+  $('#timelineModal').hidden = false;
+}
+
+function shiftTimelineDay(days) {
+  const d = new Date(timelineDay);
+  d.setDate(d.getDate() + days);                         // ローカル日付で前後(月跨ぎも安全)
+  timelineDay = startOfDay(d);
+  renderTimeline();
 }
 
 /* ============ トースト ============ */
@@ -1014,6 +1133,12 @@ $('#historyBtn').addEventListener('click', () => {
   $('#historyModal').hidden = false;
 });
 $('#historyClose').addEventListener('click', () => { $('#historyModal').hidden = true; });
+
+$('#timelineBtn').addEventListener('click', openTimeline);
+$('#timelineClose').addEventListener('click', () => { $('#timelineModal').hidden = true; });
+$('#tlPrev').addEventListener('click', () => shiftTimelineDay(-1));
+$('#tlNext').addEventListener('click', () => shiftTimelineDay(1));
+$('#tlToday').addEventListener('click', openTimeline);
 
 $('#exportBtn').addEventListener('click', () => {
   $('#exportMenu').hidden = !$('#exportMenu').hidden;

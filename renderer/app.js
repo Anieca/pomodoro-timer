@@ -908,6 +908,104 @@ function renderHistory() {
   }
 }
 
+/* ============ タイムテーブル(1日ビュー) ============ */
+const TL_PX_PER_MIN = 1.4;            // 1時間 ≈ 84px
+let timelineDay = startOfDay(new Date());
+
+function startOfDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+// セッションの主タスク名(最も長く充てたタスク)。休憩はモード名。
+function sessionLabel(s) {
+  if (s.mode !== 'work') return MODE_LABEL[s.mode] || s.mode;
+  const tt = (s.taskTimes || []).filter(x => x.taskId).sort((a, b) => b.durationSec - a.durationSec)[0];
+  if (!tt) return 'フォーカス';
+  const t = data.tasks.find(t => t.id === tt.taskId);
+  return t ? t.title : '(削除済み)';
+}
+
+function renderTimeline() {
+  const body = $('#timelineBody');
+  body.textContent = '';
+  const WD = ['日', '月', '火', '水', '木', '金', '土'];
+  $('#tlDate').textContent =
+    `${timelineDay.getFullYear()}/${timelineDay.getMonth() + 1}/${timelineDay.getDate()} (${WD[timelineDay.getDay()]})`;
+
+  const dayStr = timelineDay.toDateString();
+  const hm = d => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+  // 当日に属する実働区間を集める(intervals が無い旧形は span をフォールバック)
+  const blocks = [];
+  for (const s of data.sessions) {
+    const ivs = s.intervals && s.intervals.length ? s.intervals : [{ startedAt: s.startedAt, endedAt: s.endedAt }];
+    for (const iv of ivs) {
+      const start = new Date(iv.startedAt);
+      const end = new Date(iv.endedAt);
+      if (start.toDateString() !== dayStr) continue;
+      blocks.push({ session: s, start, end });
+    }
+  }
+
+  if (blocks.length === 0) {
+    const note = document.createElement('div');
+    note.className = 'empty-note';
+    note.textContent = 'この日の記録はありません';
+    body.appendChild(note);
+    return;
+  }
+
+  const minOf = d => d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+  let lo = Infinity, hi = -Infinity;
+  for (const b of blocks) { lo = Math.min(lo, minOf(b.start)); hi = Math.max(hi, minOf(b.end)); }
+  const startHour = Math.floor(lo / 60);
+  const endHour = Math.min(24, Math.ceil(hi / 60));
+  const rangeStartMin = startHour * 60;
+  const totalMin = Math.max(60, (endHour - startHour) * 60);
+
+  const grid = document.createElement('div');
+  grid.className = 'timeline-grid';
+  grid.style.height = (totalMin * TL_PX_PER_MIN) + 'px';
+
+  for (let h = startHour; h <= endHour; h++) {
+    const line = document.createElement('div');
+    line.className = 'timeline-hour';
+    line.style.top = ((h * 60 - rangeStartMin) * TL_PX_PER_MIN) + 'px';
+    const lab = document.createElement('span');
+    lab.className = 'timeline-hour-label';
+    lab.textContent = String(h).padStart(2, '0') + ':00';
+    line.appendChild(lab);
+    grid.appendChild(line);
+  }
+
+  for (const b of blocks) {
+    const top = (minOf(b.start) - rangeStartMin) * TL_PX_PER_MIN;
+    const height = Math.max(3, (minOf(b.end) - minOf(b.start)) * TL_PX_PER_MIN);
+    const el = document.createElement('div');
+    el.className = 'timeline-block' + (b.session.mode === 'work' ? '' : ' break');
+    el.style.top = top + 'px';
+    el.style.height = height + 'px';
+    // 低すぎるブロックはラベルが潰れるので省略(詳細は title で保持)
+    if (height >= 16) el.textContent = sessionLabel(b.session);
+    el.title = `${MODE_LABEL[b.session.mode] || b.session.mode} ${hm(b.start)}–${hm(b.end)} · ${sessionLabel(b.session)}`;
+    grid.appendChild(el);
+  }
+  body.appendChild(grid);
+}
+
+function openTimeline() {
+  timelineDay = startOfDay(new Date());
+  renderTimeline();
+  $('#timelineModal').hidden = false;
+}
+
+function shiftTimelineDay(days) {
+  timelineDay = startOfDay(new Date(timelineDay.getTime() + days * 86400000));
+  renderTimeline();
+}
+
 /* ============ トースト ============ */
 let toastTimer = null;
 function toast(msg, action) {
@@ -1014,6 +1112,12 @@ $('#historyBtn').addEventListener('click', () => {
   $('#historyModal').hidden = false;
 });
 $('#historyClose').addEventListener('click', () => { $('#historyModal').hidden = true; });
+
+$('#timelineBtn').addEventListener('click', openTimeline);
+$('#timelineClose').addEventListener('click', () => { $('#timelineModal').hidden = true; });
+$('#tlPrev').addEventListener('click', () => shiftTimelineDay(-1));
+$('#tlNext').addEventListener('click', () => shiftTimelineDay(1));
+$('#tlToday').addEventListener('click', openTimeline);
 
 $('#exportBtn').addEventListener('click', () => {
   $('#exportMenu').hidden = !$('#exportMenu').hidden;

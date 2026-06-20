@@ -1,12 +1,23 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
 if (process.env.POMODORO_USER_DATA) app.setPath('userData', process.env.POMODORO_USER_DATA);
 
 const DATA_FILE = () => path.join(app.getPath('userData'), 'pomodoro-data.json');
-const SOUNDS_DIR = path.join(__dirname, 'assets', 'sounds');
+// 同梱音源(asar 内・読み取り専用)とユーザー追加音源(userData 配下・書き込み可)。
+// パッケージ版では assets/ が asar に入り追記できないため、ユーザー音源は userData 側に置く。
+const BUNDLED_SOUNDS_DIR = path.join(__dirname, 'assets', 'sounds');
+const USER_SOUNDS_DIR = () => path.join(app.getPath('userData'), 'sounds');
 const AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac']);
+
+function listAudioFiles(dir) {
+  try {
+    return fs.readdirSync(dir).filter(f => AUDIO_EXTS.has(path.extname(f).toLowerCase()));
+  } catch {
+    return [];
+  }
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -27,6 +38,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // ユーザーが音源を置けるフォルダを用意しておく(配布版でも追加できるように)
+  try { fs.mkdirSync(USER_SOUNDS_DIR(), { recursive: true }); } catch {}
   // macOS の Dock アイコン(開発時も反映される)
   if (process.platform === 'darwin' && app.dock) {
     app.dock.setIcon(path.join(__dirname, 'assets', 'logo.png'));
@@ -58,13 +71,23 @@ ipcMain.handle('data:save', (_e, data) => {
 });
 
 ipcMain.handle('sounds:list', () => {
-  try {
-    return fs.readdirSync(SOUNDS_DIR)
-      .filter(f => AUDIO_EXTS.has(path.extname(f).toLowerCase()))
-      .map(f => ({ name: f, path: path.join(SOUNDS_DIR, f) }));
-  } catch {
-    return [];
+  // 同名はユーザー音源を優先(ユーザーが同名で差し替え可能)
+  const seen = new Set();
+  const out = [];
+  for (const [dir, source] of [[USER_SOUNDS_DIR(), 'user'], [BUNDLED_SOUNDS_DIR, 'bundled']]) {
+    for (const f of listAudioFiles(dir)) {
+      if (seen.has(f)) continue;
+      seen.add(f);
+      out.push({ name: f, path: path.join(dir, f), source });
+    }
   }
+  return out;
+});
+
+ipcMain.handle('sounds:openDir', () => {
+  const dir = USER_SOUNDS_DIR();
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  shell.openPath(dir);
 });
 
 ipcMain.on('win:focus', e => {
@@ -81,13 +104,15 @@ ipcMain.on('win:attention', e => {
 });
 
 ipcMain.handle('sounds:read', (_e, name) => {
-  const file = path.join(SOUNDS_DIR, path.basename(name));
-  if (!AUDIO_EXTS.has(path.extname(file).toLowerCase())) return null;
-  try {
-    return fs.readFileSync(file);
-  } catch {
-    return null;
+  const base = path.basename(name);
+  if (!AUDIO_EXTS.has(path.extname(base).toLowerCase())) return null;
+  // ユーザー音源を優先し、無ければ同梱音源にフォールバック
+  for (const dir of [USER_SOUNDS_DIR(), BUNDLED_SOUNDS_DIR]) {
+    try {
+      return fs.readFileSync(path.join(dir, base));
+    } catch {}
   }
+  return null;
 });
 
 function csvEscape(v) {

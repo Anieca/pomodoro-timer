@@ -807,10 +807,17 @@ async function openSettings() {
   $('#setNoiseVol').value = s.whiteNoise.volume;
   $('#volLabel').textContent = `${s.whiteNoise.volume}%`;
 
-  soundsCache = await window.api.listSounds();
+  await refreshSounds();
   populateSoundSelect($('#setNoiseFile'), s.whiteNoise.file);
   populateSoundSelect($('#setNoiseBreakFile'), s.whiteNoise.breakFile);
   $('#settingsModal').hidden = false;
+}
+
+// 音源一覧を取り直す。デコード済みバッファは名前キーのため、同名で差し替えた
+// ユーザー音源が古いバッファのまま鳴らないよう、ここで破棄して再デコードさせる。
+async function refreshSounds() {
+  soundsCache = await window.api.listSounds();
+  noiseBuffers.clear();
 }
 
 // soundsCache から <option> を組み立てて選択状態を反映する
@@ -1151,6 +1158,13 @@ $('#toggleDone').addEventListener('click', () => {
 });
 
 $('#settingsBtn').addEventListener('click', openSettings);
+$('#openSoundsDir').addEventListener('click', async () => {
+  await window.api.openSoundsDir();
+  // フォルダに追加した音源を即座に選べるよう、一覧を取り直して反映する
+  await refreshSounds();
+  populateSoundSelect($('#setNoiseFile'), $('#setNoiseFile').value);
+  populateSoundSelect($('#setNoiseBreakFile'), $('#setNoiseBreakFile').value);
+});
 $('#settingsSave').addEventListener('click', saveSettings);
 $('#settingsCancel').addEventListener('click', () => {
   $('#settingsModal').hidden = true;

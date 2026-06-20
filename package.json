@@ -3,12 +3,52 @@
   "version": "1.0.0",
   "description": "タスク管理と集中タイマーを備えたポモドーロタイマーアプリ",
   "main": "main.js",
+  "author": "Ryo Ishii",
   "license": "MIT",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac --x64 --arm64",
+    "dist:win": "electron-builder --win --x64",
+    "dist:linux": "electron-builder --linux --x64"
+  },
+  "build": {
+    "appId": "com.pomodoroatelier.app",
+    "productName": "Pomodoro Atelier",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "afterPack": "scripts/after-pack.js",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "assets/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "category": "Utility",
+      "target": [
+        "AppImage"
+      ]
+    }
   },
   "devDependencies": {
     "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
     "playwright-core": "^1.60.0"
   }
 }

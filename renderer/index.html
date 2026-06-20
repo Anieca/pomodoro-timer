@@ -112,7 +112,10 @@
         <label>音量 <span id="volLabel">50%</span>
           <input id="setNoiseVol" type="range" min="0" max="100" />
         </label>
-        <p class="hint">音源ファイル(mp3 / wav / ogg など)を <code>assets/sounds/</code> に置くと選択できます。</p>
+        <p class="hint">
+          音源ファイル(mp3 / wav / ogg など)を音源フォルダに置くと選択できます。
+          <button id="openSoundsDir" type="button" class="ghost-btn">音源フォルダを開く</button>
+        </p>
       </div>
       <div class="modal-actions">
         <button id="settingsCancel" class="secondary-btn">キャンセル</button>

@@ -1151,6 +1151,13 @@ $('#toggleDone').addEventListener('click', () => {
 });
 
 $('#settingsBtn').addEventListener('click', openSettings);
+$('#openSoundsDir').addEventListener('click', async () => {
+  await window.api.openSoundsDir();
+  // フォルダに追加した音源を即座に選べるよう、一覧を取り直して反映する
+  soundsCache = await window.api.listSounds();
+  populateSoundSelect($('#setNoiseFile'), $('#setNoiseFile').value);
+  populateSoundSelect($('#setNoiseBreakFile'), $('#setNoiseBreakFile').value);
+});
 $('#settingsSave').addEventListener('click', saveSettings);
 $('#settingsCancel').addEventListener('click', () => {
   $('#settingsModal').hidden = true;

@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('api', {
   exportData: (format, data) => ipcRenderer.invoke('data:export', { format, data }),
   listSounds: () => ipcRenderer.invoke('sounds:list'),
   readSound: name => ipcRenderer.invoke('sounds:read', name),
+  openSoundsDir: () => ipcRenderer.invoke('sounds:openDir'),
   focusWindow: () => ipcRenderer.send('win:focus'),
   requestAttention: () => ipcRenderer.send('win:attention')
 });

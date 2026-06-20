@@ -21,8 +21,9 @@ exports.default = async function afterPack(context) {
     'Delete :NSMicrophoneUsageDescription',
     'Delete :NSBluetoothAlwaysUsageDescription',
     'Delete :NSBluetoothPeripheralUsageDescription',
-    'Delete :NSAppTransportSecurity:NSAllowsArbitraryLoads',
-    'Delete :NSAppTransportSecurity:NSAllowsLocalNetworking'
+    // ATS 緩和(任意ロード・localhost への HTTP 例外)はすべて不要なので
+    // NSAppTransportSecurity ごと削除し、既定の厳格な ATS に任せる
+    'Delete :NSAppTransportSecurity'
   ];
   for (const c of cmds) {
     try {

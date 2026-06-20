@@ -30,6 +30,19 @@ npm start
 | `node scripts/generate-noise.mjs` | ホワイト/ピンク/ブラウンノイズ音源を生成 |
 | `node scripts/smoke.mjs` | Playwright によるスモークテスト |
 
+## 配布ビルド
+
+[electron-builder](https://www.electron.build/) で各 OS 向けのインストーラを生成します。生成物は `dist/` に出力されます。
+
+| スクリプト | 内容 |
+| --- | --- |
+| `npm run pack` | 署名なしでアプリ本体のみ生成（動作確認用・インストーラなし） |
+| `npm run dist` | 実行中の OS 向けインストーラを生成 |
+| `npm run dist:mac` | macOS 向け（`.dmg` / `.zip`） |
+| `npm run dist:win` | Windows 向け（`.exe` インストーラ） |
+
+> ローカルビルドでは macOS のコード署名はスキップされます（`Developer ID` 証明書がある場合のみ署名）。アイコンは `build/icon.png`（1024px）から各 OS 形式へ自動変換されます。
+
 ## プロジェクト構成
 
 ```

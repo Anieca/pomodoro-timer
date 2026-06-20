@@ -20,6 +20,7 @@
       "output": "dist",
       "buildResources": "build"
     },
+    "afterPack": "scripts/after-pack.js",
     "files": [
       "main.js",
       "preload.js",

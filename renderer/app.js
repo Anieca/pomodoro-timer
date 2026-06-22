@@ -370,7 +370,7 @@ function renderTimer() {
   // フェーズ(休憩なら種別)をラベルで示す。
   $('#phaseLabel').textContent =
     timer.status === 'running' ? MODE_LABEL[timer.mode] + '中' :
-    timer.status === 'paused' ? '一時停止中' :
+    timer.status === 'paused' ? MODE_LABEL[timer.mode] + '一時停止中' :
     timer.mode === 'work' ? '準備完了' : MODE_LABEL[timer.mode];
 
   $('#startBtn').textContent =

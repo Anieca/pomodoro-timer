@@ -10,6 +10,10 @@ const DATA_FILE = () => path.join(app.getPath('userData'), 'pomodoro-data.json')
 const BUNDLED_SOUNDS_DIR = path.join(__dirname, 'assets', 'sounds');
 const USER_SOUNDS_DIR = () => path.join(app.getPath('userData'), 'sounds');
 const AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac']);
+// 角丸スクワークルに整形したアプリアイコン(scripts/make-icon.py 生成)。
+// 配布版の Dock/アプリアイコンは electron-builder が build/icon.png から
+// 生成する .icns/.ico を使うが、ウィンドウ/開発時の Dock 用にも参照する。
+const ICON = path.join(__dirname, 'build', 'icon.png');
 
 function listAudioFiles(dir) {
   try {
@@ -27,7 +31,7 @@ function createWindow() {
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#16110e',
-    icon: path.join(__dirname, 'assets', 'logo.png'),
+    icon: ICON,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -40,9 +44,10 @@ function createWindow() {
 app.whenReady().then(() => {
   // ユーザーが音源を置けるフォルダを用意しておく(配布版でも追加できるように)
   try { fs.mkdirSync(USER_SOUNDS_DIR(), { recursive: true }); } catch {}
-  // macOS の Dock アイコン(開発時も反映される)
-  if (process.platform === 'darwin' && app.dock) {
-    app.dock.setIcon(path.join(__dirname, 'assets', 'logo.png'));
+  // 開発時(electron .)は Dock が既定の Electron アイコンになるため上書きする。
+  // 配布版は electron-builder 生成の .icns が使われるので上書きしない(角丸 .icns を優先)。
+  if (process.platform === 'darwin' && app.dock && !app.isPackaged) {
+    app.dock.setIcon(ICON);
   }
   createWindow();
   app.on('activate', () => {

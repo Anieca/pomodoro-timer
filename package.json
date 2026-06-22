@@ -25,7 +25,8 @@
       "main.js",
       "preload.js",
       "renderer/**/*",
-      "assets/**/*"
+      "assets/**/*",
+      "build/icon.png"
     ],
     "mac": {
       "category": "public.app-category.productivity",

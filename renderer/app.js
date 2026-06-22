@@ -366,20 +366,18 @@ function renderTimer() {
   $('#ringFg').style.strokeDashoffset = String(RING_LEN * (1 - ratio));
 
   $('.dial').classList.toggle('break', timer.mode !== 'work');
+  // モードはユーザーが選べず自動サイクルで進むため、待機中は次に始まる
+  // フェーズ(休憩なら種別)をラベルで示す。
   $('#phaseLabel').textContent =
     timer.status === 'running' ? MODE_LABEL[timer.mode] + '中' :
-    timer.status === 'paused' ? '一時停止中' : '準備完了';
+    timer.status === 'paused' ? '一時停止中' :
+    timer.mode === 'work' ? '準備完了' : MODE_LABEL[timer.mode];
 
   $('#startBtn').textContent =
     timer.status === 'running' ? '一時停止' :
     timer.status === 'paused' ? '再開' : '開始';
   $('#stopBtn').hidden = timer.status === 'idle';
   $('#skipBtn').hidden = timer.mode === 'work';
-
-  document.querySelectorAll('#modeTabs button').forEach(b => {
-    b.classList.toggle('active', b.dataset.mode === timer.mode);
-    b.disabled = timer.status !== 'idle';
-  });
 
   document.body.classList.toggle('focusing', timer.status === 'running' && timer.mode === 'work');
 }
@@ -537,14 +535,6 @@ function skipBreak() {
   timer.totalMs = timer.remainMs;
   renderAll();
   updateNoise();
-}
-
-function setMode(mode) {
-  if (timer.status !== 'idle') return;
-  timer.mode = mode;
-  timer.remainMs = modeDurationMs(mode);
-  timer.totalMs = timer.remainMs;
-  renderTimer();
 }
 
 function notify(title, body) {
@@ -1144,11 +1134,6 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     startPauseResume();
   }
-});
-
-$('#modeTabs').addEventListener('click', e => {
-  const btn = e.target.closest('button[data-mode]');
-  if (btn) setMode(btn.dataset.mode);
 });
 
 $('#toggleDone').addEventListener('click', () => {

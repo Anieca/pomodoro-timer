@@ -77,11 +77,18 @@ async function init() {
         ...DEFAULT_SETTINGS,
         ...loaded.settings,
         whiteNoise: { ...DEFAULT_SETTINGS.whiteNoise, ...(loaded.settings || {}).whiteNoise }
-      }
+      },
+      timer: loaded.timer || {}
     };
     const sel = data.tasks.find(t => t.id === data.selectedTaskId);
     if (!sel || sel.completed) data.selectedTaskId = null;
+    // モード手動選択を撤去したので、自動サイクルの進行(次フェーズ・長休憩までの
+    // カウント)を再起動後も維持する。
+    const f = data.timer;
+    if (['work', 'short', 'long'].includes(f.mode)) timer.mode = f.mode;
+    if (Number.isFinite(f.cycle) && f.cycle >= 0) timer.cycle = f.cycle;
   }
+  data.timer = { mode: timer.mode, cycle: timer.cycle };
   soundsCache = await window.api.listSounds();
   timer.remainMs = modeDurationMs(timer.mode);
   timer.totalMs = timer.remainMs;
@@ -455,6 +462,12 @@ function stopEarly() {
   finishSession(false);
 }
 
+// 自動サイクルの進行(次フェーズ・長休憩までのカウント)を永続化する
+function persistFlow() {
+  data.timer = { mode: timer.mode, cycle: timer.cycle };
+  save();
+}
+
 // 実行中セッション(フォーカス/休憩)を記録に積む(1分未満の中断は記録しない)
 function recordSession(completed) {
   const c = timer.current;
@@ -510,6 +523,7 @@ function finishSession(completed) {
 
   timer.remainMs = modeDurationMs(timer.mode);
   timer.totalMs = timer.remainMs;
+  persistFlow();
   renderAll();
   updateNoise();
 
@@ -533,6 +547,7 @@ function skipBreak() {
   timer.mode = 'work';
   timer.remainMs = modeDurationMs('work');
   timer.totalMs = timer.remainMs;
+  persistFlow();
   renderAll();
   updateNoise();
 }

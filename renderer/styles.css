@@ -144,25 +144,7 @@ body.focusing .sidebar:hover, body.focusing .topbar:hover { opacity: 1; }
 /* ============ メインステージ ============ */
 .stage { flex: 1; display: flex; flex-direction: column; padding: 48px 36px 28px; }
 
-.topbar { display: flex; justify-content: space-between; align-items: center; }
-
-.mode-tabs { display: flex; gap: 22px; }
-.mode-tabs button {
-  background: none; border: none; color: #7a6a59;
-  font-family: var(--body); font-size: 12px; font-weight: 500;
-  letter-spacing: 0.08em; padding: 6px 2px; cursor: pointer;
-  position: relative; transition: color 0.2s;
-}
-.mode-tabs button:hover:not(:disabled) { color: var(--cream); }
-.mode-tabs button.active { color: var(--tomato); font-weight: 700; }
-.mode-tabs button.active[data-mode="short"],
-.mode-tabs button.active[data-mode="long"] { color: var(--sage); }
-.mode-tabs button.active::after {
-  content: ""; position: absolute; left: 0; right: 0; bottom: -1px;
-  height: 2px; background: currentColor; border-radius: 1px;
-}
-.mode-tabs button:disabled:not(.active) { opacity: 0.35; cursor: default; }
-.mode-tabs button:disabled { cursor: default; }
+.topbar { display: flex; justify-content: flex-end; align-items: center; }
 
 .top-actions { display: flex; gap: 2px; align-items: center; }
 .icon-btn {

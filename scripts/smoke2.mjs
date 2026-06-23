@@ -46,9 +46,9 @@ await page.evaluate(() => {
     .find(li => li.textContent.includes('タスクB')).click();
 });
 
-// 完走を待つ
+// 完走を待つ(完走するとオートサイクルで休憩へ遷移する)
 await page.waitForFunction(
-  () => document.querySelector('#phaseLabel').textContent === '準備完了',
+  () => timer.mode !== 'work',
   null,
   { timeout: 80000 }
 );

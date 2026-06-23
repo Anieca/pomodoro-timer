@@ -57,7 +57,12 @@ await page.waitForFunction(() => timer.mode !== 'work', null, { timeout: 15000 }
 await page.waitForTimeout(300);
 await ss('d5-break');
 await click('#skipBtn');                                    // フォーカスに戻す
-await page.evaluate(() => { data.settings.workMin = 25; }); // 設定スクショ用に戻す
+// 設定を戻し、break用に出来た完走セッションを消して履歴を空に保つ
+await page.evaluate(async () => {
+  data.settings.workMin = 25;
+  data.sessions = [];
+  await window.api.saveData(data);
+});
 await page.waitForTimeout(200);
 
 // 設定モーダル

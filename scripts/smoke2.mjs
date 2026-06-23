@@ -46,9 +46,9 @@ await page.evaluate(() => {
     .find(li => li.textContent.includes('タスクB')).click();
 });
 
-// 完走を待つ
+// 完走を待つ(完走するとオートサイクルで休憩へ遷移する)
 await page.waitForFunction(
-  () => document.querySelector('#phaseLabel').textContent === '準備完了',
+  () => timer.mode !== 'work',
   null,
   { timeout: 80000 }
 );
@@ -64,7 +64,7 @@ const historyText = await page.evaluate(() => document.querySelector('#historyLi
 const saved = await page.evaluate(async () => await window.api.loadData());
 console.log('--- RESULT ---');
 console.log('task rows:', JSON.stringify(metas));
-console.log('pomodoro record:', JSON.stringify(saved.pomodoros[0], null, 1));
+console.log('session record:', JSON.stringify(saved.sessions[0], null, 1));
 console.log('history shows:', JSON.stringify(historyText));
 console.log('console errors:', errors.length ? errors : 'none');
 await app.close();

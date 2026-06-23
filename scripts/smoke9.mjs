@@ -7,15 +7,22 @@ const APP_DIR = path.resolve(import.meta.dirname, '..');
 const SHOTS = '/tmp/pomodoro-shots';
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
 
-// 履歴グルーピング確認用に2日分のデータを仕込む
-const day = off => new Date(Date.now() - off * 86400e3).toISOString();
+// 履歴グルーピング確認用に2日分のデータを仕込む(現行 sessions スキーマ)
+// at(dayOff, sec): dayOff 日前の 10:00 から sec 秒後のローカル ISO
+const at = (dayOff, sec) => {
+  const d = new Date(Date.now() - dayOff * 86400e3);
+  d.setHours(10, 0, 0, 0);
+  return new Date(d.getTime() + sec * 1000).toISOString();
+};
 fs.writeFileSync(path.join(userData, 'pomodoro-data.json'), JSON.stringify({
-  tasks: [{ id: 't1', title: '既存タスク', completed: false, createdAt: day(2), completedAt: null }],
-  pomodoros: [
-    { id: 'p1', startedAt: day(1), endedAt: day(1), durationSec: 1500, completed: true,
-      taskIds: ['t1'], taskTimes: [{ taskId: 't1', durationSec: 1500 }] },
-    { id: 'p2', startedAt: day(0), endedAt: day(0), durationSec: 600, completed: false,
-      taskIds: [], taskTimes: [{ taskId: null, durationSec: 600 }] }
+  tasks: [{ id: 't1', title: '既存タスク', completed: false, createdAt: at(2, 0), completedAt: null }],
+  sessions: [
+    { id: 'p1', mode: 'work', startedAt: at(1, 0), endedAt: at(1, 1500), durationSec: 1500, completed: true,
+      taskIds: ['t1'], intervals: [{ startedAt: at(1, 0), endedAt: at(1, 1500) }],
+      taskTimes: [{ taskId: 't1', durationSec: 1500 }] },
+    { id: 'p2', mode: 'work', startedAt: at(0, 0), endedAt: at(0, 600), durationSec: 600, completed: false,
+      taskIds: [], intervals: [{ startedAt: at(0, 0), endedAt: at(0, 600) }],
+      taskTimes: [{ taskId: null, durationSec: 600 }] }
   ],
   settings: { workMin: 25, shortMin: 5, longMin: 15, longEvery: 4,
     whiteNoise: { enabled: true, file: 'white-noise.wav', volume: 50 } },
@@ -59,7 +66,7 @@ const afterDelete = await page.evaluate(async () => {
   const d = await window.api.loadData();
   return {
     tasks: d.tasks.length,
-    p1Link: d.pomodoros[0].taskTimes[0].taskId,
+    p1Link: d.sessions[0].taskTimes[0].taskId,
     toast: document.querySelector('#toast').textContent,
     undoBtn: !!document.querySelector('.toast-action')
   };
@@ -70,8 +77,8 @@ await page.evaluate(() => document.querySelector('.toast-action').click());
 await page.waitForTimeout(300);
 const afterUndo = await page.evaluate(async () => {
   const d = await window.api.loadData();
-  return { tasks: d.tasks.map(t => t.title), p1Link: d.pomodoros[0].taskTimes[0].taskId,
-    p1TaskIds: d.pomodoros[0].taskIds };
+  return { tasks: d.tasks.map(t => t.title), p1Link: d.sessions[0].taskTimes[0].taskId,
+    p1TaskIds: d.sessions[0].taskIds };
 });
 console.log('after undo:', JSON.stringify(afterUndo));
 

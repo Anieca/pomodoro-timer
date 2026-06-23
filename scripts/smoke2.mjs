@@ -64,7 +64,7 @@ const historyText = await page.evaluate(() => document.querySelector('#historyLi
 const saved = await page.evaluate(async () => await window.api.loadData());
 console.log('--- RESULT ---');
 console.log('task rows:', JSON.stringify(metas));
-console.log('pomodoro record:', JSON.stringify(saved.pomodoros[0], null, 1));
+console.log('session record:', JSON.stringify(saved.sessions[0], null, 1));
 console.log('history shows:', JSON.stringify(historyText));
 console.log('console errors:', errors.length ? errors : 'none');
 await app.close();

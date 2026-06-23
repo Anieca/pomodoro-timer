@@ -26,6 +26,6 @@ const after = await page.evaluate(() => document.querySelector('#taskList .task-
 const saved = await page.evaluate(async () => await window.api.loadData());
 console.log('実行中(75秒経過時)の表示:', JSON.stringify(during));
 console.log('中止後の表示:', JSON.stringify(after));
-console.log('記録:', JSON.stringify(saved.pomodoros.map(p => ({ durationSec: p.durationSec, taskTimes: p.taskTimes }))));
+console.log('記録:', JSON.stringify(saved.sessions.map(p => ({ durationSec: p.durationSec, taskTimes: p.taskTimes }))));
 await app.close();
 fs.rmSync(userData, { recursive: true, force: true });

@@ -28,7 +28,7 @@ await page.waitForTimeout(800);
 
 const saved = await page.evaluate(async () => {
   const d = await window.api.loadData();
-  return d.pomodoros.map(p => ({
+  return d.sessions.map(p => ({
     completed: p.completed, durationSec: p.durationSec,
     taskTimes: p.taskTimes.map(tt => ({ task: tt.taskId ? d.tasks.find(t => t.id === tt.taskId)?.title : null, sec: tt.durationSec }))
   }));

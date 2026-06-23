@@ -59,7 +59,7 @@ const afterDelete = await page.evaluate(async () => {
   const d = await window.api.loadData();
   return {
     tasks: d.tasks.length,
-    p1Link: d.pomodoros[0].taskTimes[0].taskId,
+    p1Link: d.sessions[0].taskTimes[0].taskId,
     toast: document.querySelector('#toast').textContent,
     undoBtn: !!document.querySelector('.toast-action')
   };
@@ -70,8 +70,8 @@ await page.evaluate(() => document.querySelector('.toast-action').click());
 await page.waitForTimeout(300);
 const afterUndo = await page.evaluate(async () => {
   const d = await window.api.loadData();
-  return { tasks: d.tasks.map(t => t.title), p1Link: d.pomodoros[0].taskTimes[0].taskId,
-    p1TaskIds: d.pomodoros[0].taskIds };
+  return { tasks: d.tasks.map(t => t.title), p1Link: d.sessions[0].taskTimes[0].taskId,
+    p1TaskIds: d.sessions[0].taskIds };
 });
 console.log('after undo:', JSON.stringify(afterUndo));
 

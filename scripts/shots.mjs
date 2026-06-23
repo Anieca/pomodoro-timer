@@ -48,13 +48,17 @@ await click('#startBtn');
 await page.waitForTimeout(400);
 await ss('d4-paused');
 
-// 中止して休憩タブへ
+// 中止 → 休憩画面はオートサイクルで入る(フォーカスを極小にして完走 → 小休憩)
 await click('#stopBtn');
 await page.waitForTimeout(300);
-await page.evaluate(() => document.querySelector('#modeTabs [data-mode="short"]').click());
+await page.evaluate(() => { data.settings.workMin = 0.05; data.settings.autoStartBreak = false; });
+await click('#startBtn');
+await page.waitForFunction(() => timer.mode !== 'work', null, { timeout: 15000 });
 await page.waitForTimeout(300);
-await ss('d5-break-tab');
-await page.evaluate(() => document.querySelector('#modeTabs [data-mode="work"]').click());
+await ss('d5-break');
+await click('#skipBtn');                                    // フォーカスに戻す
+await page.evaluate(() => { data.settings.workMin = 25; }); // 設定スクショ用に戻す
+await page.waitForTimeout(200);
 
 // 設定モーダル
 await click('#settingsBtn');
@@ -72,10 +76,12 @@ await click('#historyClose');
 await page.evaluate(async () => {
   const d = await window.api.loadData();
   const tid = d.tasks[0].id;
-  d.pomodoros.push({
-    id: 'p1', startedAt: new Date(Date.now() - 3600e3).toISOString(),
-    endedAt: new Date(Date.now() - 2100e3).toISOString(),
+  const st = new Date(Date.now() - 3600e3).toISOString();
+  const en = new Date(Date.now() - 2100e3).toISOString();
+  d.sessions.push({
+    id: 'p1', mode: 'work', startedAt: st, endedAt: en,
     durationSec: 1500, completed: true, taskIds: [tid],
+    intervals: [{ startedAt: st, endedAt: en }],
     taskTimes: [{ taskId: tid, durationSec: 1200 }, { taskId: null, durationSec: 300 }]
   });
   await window.api.saveData(d);

@@ -96,7 +96,7 @@ console.log('default noise while running:', JSON.stringify(noiseState));
 console.log('history:', JSON.stringify(historyText));
 console.log('noise options:', JSON.stringify(noiseOptions));
 console.log('saved tasks:', saved ? saved.tasks.map(t => `${t.title}(${t.completed ? '完' : '未'})`).join(', ') : 'none');
-console.log('saved pomodoros:', saved ? saved.pomodoros.length : 'none');
+console.log('saved sessions:', saved ? saved.sessions.length : 'none');
 console.log('console errors:', errors.length ? errors : 'none');
 
 await app.close();

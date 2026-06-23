@@ -22,15 +22,18 @@ const afterSpace = await page.evaluate(() => document.querySelector('#phaseLabel
 await page.keyboard.press('Space');
 await page.waitForTimeout(300);
 const afterSpace2 = await page.evaluate(() => document.querySelector('#phaseLabel').textContent);
-// 中止して小休憩モードへ → スキップボタン
+// 中止
 await page.evaluate(() => document.querySelector('#stopBtn').click());
 await page.waitForTimeout(300);
-await page.evaluate(() => document.querySelectorAll('#modeTabs button')[1].click());
+// 休憩はオートサイクルで入る: フォーカスを極小にして完走 → 小休憩へ → スキップボタン
+await page.evaluate(() => { data.settings.workMin = 0.05; data.settings.autoStartBreak = false; });
+await page.evaluate(() => document.querySelector('#startBtn').click());
+await page.waitForFunction(() => timer.mode !== 'work', null, { timeout: 15000 });
 await page.waitForTimeout(300);
 const skipVisible = await page.evaluate(() => !document.querySelector('#skipBtn').hidden);
 await page.evaluate(() => document.querySelector('#skipBtn').click());
 await page.waitForTimeout(300);
-const modeAfterSkip = await page.evaluate(() => document.querySelector('#modeTabs button.active').dataset.mode);
+const modeAfterSkip = await page.evaluate(() => timer.mode);
 // Esc でモーダルを閉じる
 await page.evaluate(() => document.querySelector('#settingsBtn').click());
 await page.waitForTimeout(300);

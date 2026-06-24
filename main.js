@@ -25,10 +25,10 @@ function listAudioFiles(dir) {
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 1100,
-    height: 760,
-    minWidth: 880,
-    minHeight: 600,
+    width: 1320,
+    height: 920,
+    minWidth: 1040,
+    minHeight: 720,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#16110e',
     icon: ICON,

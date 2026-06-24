@@ -955,7 +955,8 @@ function renderHistory() {
 }
 
 /* ============ タイムテーブル(1日ビュー) ============ */
-const TL_PX_PER_MIN = 1.4;            // 1時間 ≈ 84px
+const TL_PX_PER_MIN = 0.7;            // 1時間 ≈ 42px(現実的に1時間あたり約2.5ポモドーロ)。
+                                     // 25分のフォーカスブロックは ≈17.5px となりラベル表示閾値(16px)を超える。
 let timelineDay = startOfDay(new Date());
 
 function startOfDay(d) {

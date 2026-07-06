@@ -955,7 +955,8 @@ function renderHistory() {
 }
 
 /* ============ タイムテーブル(1日ビュー) ============ */
-const TL_PX_PER_MIN = 1.4;            // 1時間 ≈ 84px
+const TL_PX_PER_MIN = 0.7;            // 1時間 ≈ 42px(現実的に1時間あたり約2.5ポモドーロ)。
+                                     // 25分のフォーカスブロックは ≈17.5px となりラベル表示閾値(16px)を超える。
 let timelineDay = startOfDay(new Date());
 
 function startOfDay(d) {
@@ -1013,24 +1014,23 @@ function renderTimeline() {
     `${timelineDay.getFullYear()}/${timelineDay.getMonth() + 1}/${timelineDay.getDate()} (${WEEKDAYS[timelineDay.getDay()]})`;
 
   const blocks = dayBlocks(timelineDay);
-  if (blocks.length === 0) {
-    const note = document.createElement('div');
-    note.className = 'empty-note';
-    note.textContent = 'この日の記録はありません';
-    body.appendChild(note);
-    return;
-  }
 
-  let lo = Infinity, hi = -Infinity;
-  for (const b of blocks) { lo = Math.min(lo, b.startMin); hi = Math.max(hi, b.endMin); }
-  const startHour = Math.floor(lo / 60);
-  const endHour = Math.min(24, Math.ceil(hi / 60));
+  // 1日を常に 0〜24 時で表示する(記録の有無や範囲に依らず固定)
+  const startHour = 0;
+  const endHour = 24;
   const rangeStartMin = startHour * 60;
-  const totalMin = Math.max(60, (endHour - startHour) * 60);
+  const totalMin = (endHour - startHour) * 60;
 
   const grid = document.createElement('div');
   grid.className = 'timeline-grid';
   grid.style.height = (totalMin * TL_PX_PER_MIN) + 'px';
+
+  if (blocks.length === 0) {
+    const note = document.createElement('div');
+    note.className = 'empty-note timeline-empty';
+    note.textContent = 'この日の記録はありません';
+    grid.appendChild(note);
+  }
 
   for (let h = startHour; h <= endHour; h++) {
     const line = document.createElement('div');
@@ -1057,12 +1057,21 @@ function renderTimeline() {
     grid.appendChild(el);
   }
   body.appendChild(grid);
+
+  // 0〜24 時の全域は縦に長いため、見せたい位置までスクロールする。
+  // 記録があれば最初のブロック、無ければグリッド中央(.timeline-empty の位置)に合わせる。
+  const focusMin = blocks.length > 0
+    ? Math.min(...blocks.map(b => b.startMin))
+    : (rangeStartMin + totalMin / 2);
+  body.scrollTop = Math.max(0, (focusMin - rangeStartMin) * TL_PX_PER_MIN - 40);
 }
 
 function openTimeline() {
   timelineDay = startOfDay(new Date());
-  renderTimeline();
+  // 先にモーダルを表示してから描画する。display:none のままだと
+  // renderTimeline 内の scrollTop 設定が無視され、初回が 0:00 起点になるため。
   $('#timelineModal').hidden = false;
+  renderTimeline();
 }
 
 function shiftTimelineDay(days) {

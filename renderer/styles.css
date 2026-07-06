@@ -378,6 +378,10 @@ body.focusing .sidebar:hover, body.focusing .topbar:hover { opacity: 1; }
   background: rgba(232, 85, 62, 0.18); border: 1px solid var(--tomato); color: var(--cream);
 }
 .timeline-block.break { background: rgba(147, 171, 132, 0.16); border-color: var(--sage); }
+.timeline-empty {
+  position: absolute; top: 50%; left: 0; right: 0; transform: translateY(-50%);
+  margin: 0; padding: 0;
+}
 
 /* ============ トースト ============ */
 .toast {

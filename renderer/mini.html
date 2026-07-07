@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <title>Mini Timer</title>
+  <style>
+    :root {
+      --work: #e0654f;
+      --break: #4f9e8f;
+      --ink: #f4ece4;
+      --sub: #b7a89b;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 220px; height: 176px;
+      background: transparent;
+      overflow: hidden;
+      font-family: -apple-system, 'Zen Kaku Gothic New', sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .card {
+      width: 100%; height: 100%;
+      background: rgba(22, 17, 14, 0.92);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 18px;
+      -webkit-app-region: drag;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 12px;
+      backdrop-filter: blur(8px);
+    }
+    .dial { position: relative; width: 92px; height: 92px; }
+    .dial svg { transform: rotate(-90deg); }
+    .ring-bg { fill: none; stroke: rgba(255,255,255,0.10); stroke-width: 8; }
+    .ring-fg {
+      fill: none; stroke: var(--work); stroke-width: 8; stroke-linecap: round;
+      transition: stroke-dashoffset 0.3s linear, stroke 0.3s ease;
+    }
+    body.break .ring-fg { stroke: var(--break); }
+    .dial-inner {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+    }
+    .time { font-size: 22px; font-weight: 700; color: var(--ink); letter-spacing: 0.5px; font-variant-numeric: tabular-nums; }
+    .phase { font-size: 10px; color: var(--sub); margin-top: 1px; }
+    .controls {
+      display: flex; gap: 8px;
+      -webkit-app-region: no-drag;
+    }
+    button {
+      -webkit-app-region: no-drag;
+      border: none; cursor: pointer;
+      background: rgba(255,255,255,0.10);
+      color: var(--ink);
+      width: 34px; height: 30px;
+      border-radius: 9px;
+      font-size: 13px;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.15s ease;
+    }
+    button:hover { background: rgba(255,255,255,0.20); }
+    button:disabled { opacity: 0.3; cursor: default; }
+    #startBtn { background: var(--work); color: #fff; width: 44px; }
+    body.break #startBtn { background: var(--break); }
+    #startBtn:hover { filter: brightness(1.1); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="dial">
+      <svg viewBox="0 0 100 100" width="92" height="92">
+        <circle class="ring-bg" cx="50" cy="50" r="42" />
+        <circle class="ring-fg" id="ringFg" cx="50" cy="50" r="42" />
+      </svg>
+      <div class="dial-inner">
+        <div class="time" id="time">25:00</div>
+        <div class="phase" id="phase">準備完了</div>
+      </div>
+    </div>
+    <div class="controls">
+      <button id="startBtn" title="開始 / 一時停止">▶</button>
+      <button id="skipBtn" title="休憩をスキップ">⏭</button>
+      <button id="stopBtn" title="中止">⏹</button>
+    </div>
+  </div>
+  <script src="mini.js"></script>
+</body>
+</html>

@@ -67,6 +67,15 @@ function migrateSessions(loaded) {
 
 /* ============ 初期化 ============ */
 async function init() {
+  // Tray / ミニウィンドウからの操作を本体タイマーに反映する。
+  // await より前(同期実行部)で登録し、起動直後やウィンドウ再生成直後の
+  // 操作要求(did-finish-load 後に main が送る)を取りこぼさない。
+  window.api.onTimerCommand(cmd => {
+    if (cmd === 'toggle') startPauseResume();
+    else if (cmd === 'skip') { if (timer.mode !== 'work' && timer.status !== 'idle') skipBreak(); }
+    else if (cmd === 'stop') stopEarly();
+  });
+
   const loaded = await window.api.loadData();
   if (loaded) {
     data = {
@@ -387,6 +396,15 @@ function renderTimer() {
   $('#skipBtn').hidden = timer.mode === 'work';
 
   document.body.classList.toggle('focusing', timer.status === 'running' && timer.mode === 'work');
+
+  // Tray / Dock / ミニウィンドウ用に現在状態を main へ通知する。
+  window.api.pushTimerState({
+    status: timer.status,
+    mode: timer.mode,
+    mm, ss,
+    ratio,
+    remainSec: totalSec
+  });
 }
 
 function renderCycleDots() {
@@ -1216,9 +1234,13 @@ document.querySelectorAll('.modal-backdrop').forEach(m => {
   });
 });
 
-// アプリ終了・リロード時、実行中のセッションを中断として記録(1分以上のもの)
+// アプリ終了・リロード時、実行中のセッションを中断として記録(1分以上のもの)。
+// recordSession の save() は非同期のため、beforeunload では完了を待てない。
+// 終了(Tray「終了」/Cmd+Q)でレンダラが破棄される前に確実に永続化するよう、
+// 同期 IPC でブロッキング保存する。
 window.addEventListener('beforeunload', () => {
   if (timer.current) recordSession(false);
+  window.api.saveDataSync(data);
 });
 
 init();

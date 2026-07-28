@@ -14,14 +14,14 @@ const at = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return d.to
 fs.writeFileSync(path.join(userData, 'pomodoro-data.json'), JSON.stringify({
   tasks: [{ id: 't1', title: '設計レビュー', completed: false, createdAt: at(9, 0), completedAt: null }],
   sessions: [
-    // フォーカス: 10:00–10:20 / (5分停止) / 10:25–10:40 = 実働2区間
-    { id: 'w1', mode: 'work', startedAt: at(10, 0), endedAt: at(10, 40), durationSec: 2100, completed: true,
+    // フォーカス: 10:00–10:30 / (5分停止) / 10:35–11:05 = 実働2区間(各30分)
+    { id: 'w1', mode: 'work', startedAt: at(10, 0), endedAt: at(11, 5), durationSec: 3600, completed: true,
       taskIds: ['t1'],
-      intervals: [{ startedAt: at(10, 0), endedAt: at(10, 20) }, { startedAt: at(10, 25), endedAt: at(10, 40) }],
-      taskTimes: [{ taskId: 't1', durationSec: 2100 }] },
-    // 長休憩: 10:40–10:55(ラベルが出る高さ)
-    { id: 'b1', mode: 'long', startedAt: at(10, 40), endedAt: at(10, 55), durationSec: 900, completed: true,
-      taskIds: [], intervals: [{ startedAt: at(10, 40), endedAt: at(10, 55) }], taskTimes: [] }
+      intervals: [{ startedAt: at(10, 0), endedAt: at(10, 30) }, { startedAt: at(10, 35), endedAt: at(11, 5) }],
+      taskTimes: [{ taskId: 't1', durationSec: 3600 }] },
+    // 長休憩: 11:05–11:35(30分。0.7px/分でもラベルが出る高さ=21px)
+    { id: 'b1', mode: 'long', startedAt: at(11, 5), endedAt: at(11, 35), durationSec: 1800, completed: true,
+      taskIds: [], intervals: [{ startedAt: at(11, 5), endedAt: at(11, 35) }], taskTimes: [] }
   ],
   selectedTaskId: null,
   settings: { workMin: 25, shortMin: 5, longMin: 15, longEvery: 4 }
@@ -76,7 +76,7 @@ console.log('--- RESULT ---');
 console.log('modal open:', !view.hidden, '/ date:', JSON.stringify(view.date));
 console.log('hour lines:', view.hours);
 console.log('blocks:', JSON.stringify(view.blocks));
-console.log('work gap(px):', Math.round(gap), '(5分停止 → 約7px)');
+console.log('work gap(px):', Math.round(gap), '(5分停止 → 0.7px/分で約3.5px)');
 console.log('nav: today=', dToday, 'prev=', dPrev, '(empty:', prevEmpty, ') back=', dBack);
 console.log('console/page errors:', errors.length ? errors : 'none');
 
@@ -85,8 +85,9 @@ assert(!view.hidden, 'timeline modal opened');
 assert(view.blocks.length === 3, '3 blocks (2 work intervals + 1 break)');
 assert(workBlocks.length === 2, 'paused work split into 2 blocks');
 assert(workBlocks[0].text === '設計レビュー', 'work block labeled with task title');
-assert(workBlocks[0].height > 20 && workBlocks[1].height > 15, 'block heights scale with duration');
-assert(gap > 4, 'visible vertical gap between work blocks (5min pause)');
+// 0.7px/分: 30分 → 21px。両区間ともラベル閾値(16px)を超える。
+assert(workBlocks[0].height > 18 && workBlocks[1].height > 18, 'block heights scale with duration (~21px for 30min)');
+assert(gap > 2, 'visible vertical gap between work blocks (5min pause → ~3.5px)');
 assert(breakBlocks.length === 1 && breakBlocks[0].text === '長休憩', 'break rendered with label/class');
 assert(view.hours >= 1, 'hour grid lines drawn');
 assert(dPrev !== dToday, 'prev day changes the date label');

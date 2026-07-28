@@ -64,11 +64,11 @@ console.log('errors:', errors.length ? errors : 'none');
 const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 assert(today.length === 1, 'today shows only the crossing block (0-min interval excluded)');
 assert(today[0] && today[0].top > 0, 'crossing block sits near the bottom of the day (starts 23:30)');
-assert(today[0] && Math.abs(today[0].height - 42) < 4, 'today portion height = 30min (clipped at midnight)');
+assert(today[0] && Math.abs(today[0].height - 21) < 4, 'today portion height = 30min (0.7px/分 → ~21px, clipped at midnight)');
 assert(today[0] && today[0].text.includes('↓'), 'today portion marked as continuing to next day');
 assert(next.length === 1, 'next day shows the carried-over block');
 assert(next[0] && next[0].top < 4, 'next-day portion starts at top (00:00)');
-assert(next[0] && Math.abs(next[0].height - 42) < 4, 'next-day portion height = 30min');
+assert(next[0] && Math.abs(next[0].height - 21) < 4, 'next-day portion height = 30min (0.7px/分 → ~21px)');
 assert(next[0] && next[0].text.includes('↑'), 'next-day portion marked as continued from previous day');
 assert(errors.length === 0, 'no console/page errors');
 

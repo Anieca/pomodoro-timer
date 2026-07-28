@@ -289,14 +289,25 @@ function writeData(data) {
 }
 
 ipcMain.handle('data:save', (_e, data) => {
-  writeData(data);
-  return true;
+  try {
+    writeData(data);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
 });
 
 // 終了直前の同期保存。sendSync でレンダラをブロックし、書き込み完了を保証する。
+// 失敗は握りつぶさず、ユーザーが気づけるようネイティブダイアログで通知する。
 ipcMain.on('data:save-sync', (e, data) => {
-  try { writeData(data); } catch {}
-  e.returnValue = true;
+  try {
+    writeData(data);
+    e.returnValue = { ok: true };
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    try { dialog.showErrorBox('保存に失敗しました', 'データを保存できませんでした:\n' + msg); } catch {}
+    e.returnValue = { ok: false, error: msg };
+  }
 });
 
 ipcMain.handle('sounds:list', () => {

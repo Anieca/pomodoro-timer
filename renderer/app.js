@@ -29,7 +29,11 @@ const timer = {
 };
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-const save = () => window.api.saveData(data);
+// 保存は fire-and-forget だが、失敗(容量不足・権限エラー等)は黙殺せず通知する。
+const save = () => window.api.saveData(data).then(
+  res => { if (res && res.ok === false) toast('保存に失敗しました。ディスクの空き容量や権限を確認してください'); },
+  () => toast('保存に失敗しました。ディスクの空き容量や権限を確認してください')
+);
 
 const MODE_LABEL = { work: 'フォーカス', short: '小休憩', long: '長休憩' };
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
@@ -269,9 +273,14 @@ function openInterval() {
 function closeInterval() {
   const c = timer.current;
   if (!c || !c.intStartAt) return;
+  // 実働区間の終端は予定終了時刻(endAt)を超えない。スリープや background
+  // throttling で tick が遅れ、復帰時の now が endAt を大幅に超えても、実時間を
+  // 予定終了でクリップして durationSec / 今日の合計 / タイムライン / CSV が
+  // 数時間に膨らむのを防ぐ(segments 側は endAt 基準の pomoElapsedMs で既に正しい)。
+  const endMs = Math.max(c.intStartAt, Math.min(Date.now(), timer.endAt));
   c.intervals.push({
     startedAt: new Date(c.intStartAt).toISOString(),
-    endedAt: new Date().toISOString()
+    endedAt: new Date(endMs).toISOString()
   });
   c.intStartAt = null;
 }
@@ -340,13 +349,21 @@ function deleteTask(id) {
     });
   }
   if (timer.current) {
-    for (const s of timer.current.segments) {
+    const c = timer.current;
+    // 進行中セグメントが削除対象なら、先に確定(closeSegment)してから匿名化する。
+    // switchSegment(null) を先に呼ぶと、closeSegment が削除済みIDのセグメントを
+    // 新たに積み、下の匿名化ループを素通りして履歴にIDが残ってしまう。
+    if (c.segTaskId === id) {
+      closeSegment();
+      c.segTaskId = null;
+      c.segStartMs = pomoElapsedMs();
+    }
+    for (const s of c.segments) {
       if (s.taskId === id) {
         s.taskId = null;
         undo.segPatches.push(s);
       }
     }
-    if (timer.current.segTaskId === id) switchSegment(null);
   }
   if (data.selectedTaskId === id) data.selectedTaskId = null;
   save();

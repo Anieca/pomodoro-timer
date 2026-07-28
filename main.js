@@ -385,11 +385,20 @@ function gateWrite() {
   return backup;
 }
 
-// クラッシュ時の破損を防ぐためアトミックに書き込む
+// クラッシュ時の破損を防ぐためアトミックに書き込む。
+// 順序が重要:置き換えデータを .tmp に書き切ってから原本を退避する。先に退避すると、
+// 直後の書き込みが失敗(容量不足等)した場合に正本が消え、次回起動が ENOENT =初回起動
+// として黙って空で始まってしまう(退避先を誰も知らないまま残る)。
 function writeData(data) {
-  const preserved = gateWrite();
   const tmp = DATA_FILE() + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  let preserved;
+  try {
+    preserved = gateWrite();
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch {}   // 保存を通さない以上、中途半端な .tmp は残さない
+    throw err;
+  }
   fs.renameSync(tmp, DATA_FILE());
   return preserved;
 }
@@ -411,6 +420,19 @@ ipcMain.on('data:save-sync', (e, data) => {
   if (!isTrusted(e)) { e.returnValue = { ok: false, error: 'untrusted sender' }; return; }
   try {
     const preserved = writeData(data);
+    // 何も保存せずに終了/リロードした場合、原本を退避するのはこの同期保存が最初になる。
+    // 呼び出し元(beforeunload)は戻り値を使えずトーストも出せないため、退避先を伝える
+    // 手段がここしかない。黙って移すと次回起動は普通に空で開き、原本を追えなくなる。
+    if (preserved) {
+      try {
+        dialog.showMessageBoxSync({
+          type: 'warning',
+          title: '元のデータファイルを退避しました',
+          message: '起動時に読み込めなかったデータファイルを退避し、新しいファイルに保存しました。',
+          detail: '退避先:\n' + preserved
+        });
+      } catch {}
+    }
     e.returnValue = preserved ? { ok: true, preserved } : { ok: true };
   } catch (err) {
     const msg = String((err && err.message) || err);

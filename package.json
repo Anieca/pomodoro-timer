@@ -7,6 +7,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
+    "postinstall": "node scripts/ensure-electron.mjs",
     "test": "node scripts/run-tests.mjs",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",

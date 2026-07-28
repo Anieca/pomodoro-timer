@@ -19,6 +19,9 @@ exports.default = async function afterPack(context) {
   const cmds = [
     'Delete :NSCameraUsageDescription',
     'Delete :NSMicrophoneUsageDescription',
+    // Electron 43 で追加される音声キャプチャ許可文言。本アプリは録音・音声
+    // キャプチャを行わないため削除する。
+    'Delete :NSAudioCaptureUsageDescription',
     'Delete :NSBluetoothAlwaysUsageDescription',
     'Delete :NSBluetoothPeripheralUsageDescription',
     // ATS 緩和(任意ロード・localhost への HTTP 例外)はすべて不要なので

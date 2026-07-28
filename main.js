@@ -34,6 +34,24 @@ let latestState = { status: 'idle', mode: 'work', mm: '25', ss: '00', ratio: 1, 
 const MODE_EMOJI = { work: '🍅', short: '☕', long: '🌙' };
 const MODE_TEXT = { work: 'フォーカス', short: '小休憩', long: '長休憩' };
 
+// file:// 以外への遷移と新規ウィンドウ生成を禁止する多層防御。万一 remote
+// navigation が起きても preload API が外部 origin に晒されないようにする。
+function hardenWebContents(wc) {
+  wc.on('will-navigate', (e, url) => { if (!url.startsWith('file://')) e.preventDefault(); });
+  wc.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) shell.openExternal(url); // 外部リンクは既定ブラウザで
+    return { action: 'deny' };
+  });
+}
+
+// IPC の発信元が自前のウィンドウ(メイン/ミニ)かを検証する。外部/未知フレームからの
+// データ保存・エクスポート・音源読み取り等を拒否する。
+function isTrusted(e) {
+  const wc = e.sender;
+  return (mainWin && !mainWin.isDestroyed() && wc === mainWin.webContents) ||
+         (miniWin && !miniWin.isDestroyed() && wc === miniWin.webContents);
+}
+
 function createWindow() {
   mainWin = new BrowserWindow({
     width: 1320,
@@ -54,6 +72,7 @@ function createWindow() {
     }
   });
   mainWin.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  hardenWebContents(mainWin.webContents);
   // macOS はタイマー本体がこのレンダラにあるため、閉じるボタンでは破棄せず
   // 隠すだけにして Tray/ミニ常駐のまま実行中タイマーを維持する。
   // 非 macOS は Tray タイトルが出せず常駐 UI が弱いので、従来どおり閉じたら終了。
@@ -104,6 +123,7 @@ function createMiniWindow() {
   const { workArea } = require('electron').screen.getPrimaryDisplay();
   miniWin.setPosition(workArea.x + workArea.width - 240, workArea.y + 20);
   miniWin.loadFile(path.join(__dirname, 'renderer', 'mini.html'));
+  hardenWebContents(miniWin.webContents);
   miniWin.webContents.once('did-finish-load', () => miniWin.webContents.send('timer:state', latestState));
   miniWin.on('closed', () => { miniWin = null; refreshTrayMenu(); });
   return miniWin;
@@ -266,19 +286,65 @@ ipcMain.on('timer:state', (e, state) => {
 });
 
 // ミニウィンドウからの操作要求を本体タイマーに転送する。
-ipcMain.on('ui:command', (_e, cmd) => {
+ipcMain.on('ui:command', (e, cmd) => {
+  if (!isTrusted(e)) return;
   if (cmd === 'toggleMini') return toggleMini();
   sendCommand(cmd);
 });
 
-ipcMain.on('mini:toggle', () => toggleMini());
+ipcMain.on('mini:toggle', e => { if (isTrusted(e)) toggleMini(); });
 
-ipcMain.handle('data:load', () => {
+// 壊れた保存ファイルを退避して原本を保全する(上書きによる損失を防ぐ)。
+function quarantineCorrupt(file, raw) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backup = `${file}.corrupt-${stamp}`;
+  try { fs.writeFileSync(backup, raw, 'utf8'); } catch {}
+  return backup;
+}
+
+// 読み込み時の警告(破損退避・回復・権限エラー)。起動をブロックしないよう
+// モーダルではなくレンダラのトーストで通知する(data:consume-warning で回収)。
+let pendingLoadWarning = null;
+
+ipcMain.handle('data:load', e => {
+  if (!isTrusted(e)) return null;
+  const file = DATA_FILE();
+  let raw;
   try {
-    return JSON.parse(fs.readFileSync(DATA_FILE(), 'utf8'));
-  } catch {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    // 初回起動(ファイル無し)は空データとして扱う。
+    if (err && err.code === 'ENOENT') return null;
+    // 権限エラー等で読めない場合、空起動→上書きで復旧不能になるのを避けるため警告する。
+    pendingLoadWarning = 'セーブファイルを読み込めませんでした。データ保護のため保存前に確認してください: ' + String((err && err.message) || err);
     return null;
   }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // 破損。まず直近のアトミック書き込み残骸(.tmp)からの回復を試みる。
+    try {
+      const tmp = file + '.tmp';
+      const recovered = JSON.parse(fs.readFileSync(tmp, 'utf8'));
+      quarantineCorrupt(file, raw);       // 壊れた本体を退避してから
+      try { fs.copyFileSync(tmp, file); } catch {} // 回復データを昇格
+      pendingLoadWarning = '保存ファイルが壊れていたため、直前の自動保存から復元しました。';
+      return recovered;
+    } catch {}
+    // 回復不可: 壊れたファイルを退避(原本保全)し、警告して空で継続する。
+    const backup = quarantineCorrupt(file, raw);
+    console.warn('[data:load] 破損ファイルを退避しました:', backup);
+    pendingLoadWarning = '保存ファイルが破損していたため退避し、空の状態で起動しました(元ファイルは .corrupt- として保存)。';
+    return null;
+  }
+});
+
+// 読み込み時警告を一度だけ回収する(レンダラがトースト表示に使う)。
+ipcMain.handle('data:consume-warning', e => {
+  if (!isTrusted(e)) return null;
+  const w = pendingLoadWarning;
+  pendingLoadWarning = null;
+  return w;
 });
 
 // クラッシュ時の破損を防ぐためアトミックに書き込む
@@ -288,7 +354,8 @@ function writeData(data) {
   fs.renameSync(tmp, DATA_FILE());
 }
 
-ipcMain.handle('data:save', (_e, data) => {
+ipcMain.handle('data:save', (e, data) => {
+  if (!isTrusted(e)) return { ok: false, error: 'untrusted sender' };
   try {
     writeData(data);
     return { ok: true };
@@ -300,6 +367,7 @@ ipcMain.handle('data:save', (_e, data) => {
 // 終了直前の同期保存。sendSync でレンダラをブロックし、書き込み完了を保証する。
 // 失敗は握りつぶさず、ユーザーが気づけるようネイティブダイアログで通知する。
 ipcMain.on('data:save-sync', (e, data) => {
+  if (!isTrusted(e)) { e.returnValue = { ok: false, error: 'untrusted sender' }; return; }
   try {
     writeData(data);
     e.returnValue = { ok: true };
@@ -310,7 +378,8 @@ ipcMain.on('data:save-sync', (e, data) => {
   }
 });
 
-ipcMain.handle('sounds:list', () => {
+ipcMain.handle('sounds:list', e => {
+  if (!isTrusted(e)) return [];
   // 同名はユーザー音源を優先(ユーザーが同名で差し替え可能)
   const seen = new Set();
   const out = [];
@@ -324,13 +393,15 @@ ipcMain.handle('sounds:list', () => {
   return out;
 });
 
-ipcMain.handle('sounds:openDir', () => {
+ipcMain.handle('sounds:openDir', e => {
+  if (!isTrusted(e)) return;
   const dir = USER_SOUNDS_DIR();
   try { fs.mkdirSync(dir, { recursive: true }); } catch {}
   shell.openPath(dir);
 });
 
 ipcMain.on('win:focus', e => {
+  if (!isTrusted(e)) return;
   const win = BrowserWindow.fromWebContents(e.sender);
   if (!win) return;
   if (win.isMinimized()) win.restore();
@@ -339,11 +410,13 @@ ipcMain.on('win:focus', e => {
 });
 
 ipcMain.on('win:attention', e => {
+  if (!isTrusted(e)) return;
   const win = BrowserWindow.fromWebContents(e.sender);
   if (win && !win.isFocused() && app.dock) app.dock.bounce('informational');
 });
 
-ipcMain.handle('sounds:read', (_e, name) => {
+ipcMain.handle('sounds:read', (e, name) => {
+  if (!isTrusted(e)) return null;
   const base = path.basename(name);
   if (!AUDIO_EXTS.has(path.extname(base).toLowerCase())) return null;
   // ユーザー音源を優先し、無ければ同梱音源にフォールバック
@@ -356,7 +429,11 @@ ipcMain.handle('sounds:read', (_e, name) => {
 });
 
 function csvEscape(v) {
-  const s = String(v ?? '');
+  let s = String(v ?? '');
+  // Excel/Google スプレッドシート等の数式注入(CSV injection)対策。
+  // 先頭が = + - @ やタブ/復帰のセルは数式として解釈され得るため、先頭に ' を付けて
+  // テキストとして扱わせる(タスク名を外部から貼り付ける運用を想定)。
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
   return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 
@@ -371,8 +448,9 @@ function fmtDate(iso) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-ipcMain.handle('data:export', async (e, { format, data }) => {
-  const win = BrowserWindow.fromWebContents(e.sender);
+ipcMain.handle('data:export', async (e, payload) => {
+  if (!isTrusted(e)) return { saved: false, error: 'untrusted sender' };
+  const { format, data } = payload || {};
   const stamp = new Date().toISOString().slice(0, 10);
   const defs = {
     json: { name: `pomodoro-export-${stamp}.json`, filters: [{ name: 'JSON', extensions: ['json'] }] },
@@ -380,17 +458,22 @@ ipcMain.handle('data:export', async (e, { format, data }) => {
     'csv-tasks': { name: `tasks-${stamp}.csv`, filters: [{ name: 'CSV', extensions: ['csv'] }] }
   };
   const def = defs[format];
+  // 未知フォーマットや不正な data 形状はここで弾く(IPC 境界の防御)。
+  if (!def || !data || typeof data !== 'object') return { saved: false, error: 'invalid request' };
+  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+  const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+
+  const win = BrowserWindow.fromWebContents(e.sender);
   const { canceled, filePath } = await dialog.showSaveDialog(win, {
     defaultPath: def.name,
     filters: def.filters
   });
   if (canceled || !filePath) return { saved: false };
 
-  const taskTitle = id => (data.tasks.find(t => t.id === id) || {}).title || '(削除済み)';
+  const taskTitle = id => (tasks.find(t => t.id === id) || {}).title || '(削除済み)';
   const MODE_LABEL = { work: 'フォーカス', short: '小休憩', long: '長休憩' };
   let content;
   const min = sec => Math.round((sec / 60) * 10) / 10;
-  const sessions = data.sessions || [];
   if (format === 'json') {
     content = JSON.stringify(data, null, 2);
   } else if (format === 'csv-sessions') {
@@ -414,7 +497,7 @@ ipcMain.handle('data:export', async (e, { format, data }) => {
     content = toCsv(rows);
   } else {
     const rows = [['ID', 'タイトル', '状態', '作成日時', '完了日時', 'ポモドーロ数(完走)', '合計フォーカス(分)']];
-    for (const t of data.tasks) {
+    for (const t of tasks) {
       let pomos = 0, totalSec = 0;
       for (const p of sessions) {
         if (p.completed && (p.taskIds || []).includes(t.id)) pomos++;
@@ -432,6 +515,10 @@ ipcMain.handle('data:export', async (e, { format, data }) => {
     }
     content = toCsv(rows);
   }
-  fs.writeFileSync(filePath, content, 'utf8');
+  try {
+    fs.writeFileSync(filePath, content, 'utf8');
+  } catch (err) {
+    return { saved: false, error: String((err && err.message) || err) };
+  }
   return { saved: true, filePath };
 });

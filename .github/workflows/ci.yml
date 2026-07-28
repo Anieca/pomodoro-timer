@@ -24,3 +24,19 @@ jobs:
           node --check renderer/mini.js
       - name: Smoke tests
         run: npm test
+
+  pack:
+    # electron-builder の配布パッケージングが通るかを確認する(更新時の回帰検知)。
+    # 署名はしない(--dir)。
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Package (unsigned, --dir)
+        run: npm run pack
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false

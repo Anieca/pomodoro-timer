@@ -50,23 +50,67 @@ function modeDurationMs(mode) {
   return min * 60 * 1000;
 }
 
-// 旧 data.pomodoros(フォーカスのみ・区間情報なし)を sessions 形式へ移行
+// 1件のセッションを正規化する。破損・中間バージョン・型不整合のデータでも
+// taskStats / 履歴 / 削除処理が undefined.includes 等で落ちないよう、配列・数値・
+// mode・区間を必ず補正する。区間が無い旧データは durationSec 長の1区間に畳む。
+function normalizeSession(s) {
+  const o = s && typeof s === 'object' ? s : {};
+  const mode = ['work', 'short', 'long'].includes(o.mode) ? o.mode : 'work';
+  const durationSec = Number.isFinite(o.durationSec) && o.durationSec >= 0 ? o.durationSec : 0;
+  const startedAt = o.startedAt || new Date().toISOString();
+  const endedAt = o.endedAt || new Date(new Date(startedAt).getTime() + durationSec * 1000).toISOString();
+  const intervals = (Array.isArray(o.intervals) ? o.intervals : [])
+    .filter(iv => iv && iv.startedAt && iv.endedAt);
+  const taskTimes = (Array.isArray(o.taskTimes) ? o.taskTimes : [])
+    .filter(tt => tt && typeof tt === 'object' && Number.isFinite(tt.durationSec));
+  return {
+    ...o,
+    id: o.id || uid(),
+    mode,
+    startedAt,
+    endedAt,
+    durationSec,
+    completed: !!o.completed,
+    taskIds: Array.isArray(o.taskIds) ? o.taskIds : [],
+    taskTimes,
+    intervals: intervals.length ? intervals : [{ startedAt, endedAt }]
+  };
+}
+
+// 旧 data.pomodoros(フォーカスのみ・区間情報なし)も含め、全セッションを正規化して返す
 function migrateSessions(loaded) {
-  if (Array.isArray(loaded.sessions)) return loaded.sessions;
-  return (loaded.pomodoros || []).map(p => ({
-    ...p,
-    mode: p.mode || 'work',
-    taskIds: p.taskIds || [],
-    taskTimes: p.taskTimes || [],
-    // 旧データは一時停止構造が復元不能。実働区間を durationSec 長に揃え、
-    // sum(intervals) === durationSec を保つ(plot で実働を過大計上しない)。
-    intervals: p.intervals && p.intervals.length
-      ? p.intervals
-      : [{
-          startedAt: p.startedAt,
-          endedAt: new Date(new Date(p.startedAt).getTime() + (p.durationSec || 0) * 1000).toISOString()
-        }]
-  }));
+  const list = Array.isArray(loaded.sessions) ? loaded.sessions
+    : Array.isArray(loaded.pomodoros) ? loaded.pomodoros : [];
+  return list.map(normalizeSession);
+}
+
+// 設定を安全な範囲へ丸める(保存時だけでなく読込時にも適用し、破損値や巨大値で
+// DOM 大量生成・NaN 表示・不正 ratio に陥らないようにする)
+function clampInt(v, min, max, fallback) {
+  const n = typeof v === 'number' ? v : parseInt(v, 10);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+}
+
+function clampSettings(s) {
+  const d = DEFAULT_SETTINGS;
+  const src = s && typeof s === 'object' ? s : {};
+  const wn = src.whiteNoise && typeof src.whiteNoise === 'object' ? src.whiteNoise : {};
+  return {
+    ...d,
+    ...src,
+    workMin: clampInt(src.workMin, 1, 120, d.workMin),
+    shortMin: clampInt(src.shortMin, 1, 60, d.shortMin),
+    longMin: clampInt(src.longMin, 1, 90, d.longMin),
+    longEvery: clampInt(src.longEvery, 1, 12, d.longEvery),
+    autoStartBreak: !!src.autoStartBreak,
+    autoStartWork: !!src.autoStartWork,
+    whiteNoise: {
+      ...d.whiteNoise,
+      ...wn,
+      enabled: 'enabled' in wn ? !!wn.enabled : d.whiteNoise.enabled,
+      volume: clampInt(wn.volume, 0, 100, d.whiteNoise.volume)
+    }
+  };
 }
 
 /* ============ 初期化 ============ */
@@ -83,14 +127,12 @@ async function init() {
   const loaded = await window.api.loadData();
   if (loaded) {
     data = {
-      tasks: loaded.tasks || [],
+      tasks: (Array.isArray(loaded.tasks) ? loaded.tasks : [])
+        .filter(t => t && typeof t === 'object' && t.id)
+        .map(t => ({ ...t, title: String(t.title ?? ''), completed: !!t.completed })),
       sessions: migrateSessions(loaded),
       selectedTaskId: loaded.selectedTaskId || null,
-      settings: {
-        ...DEFAULT_SETTINGS,
-        ...loaded.settings,
-        whiteNoise: { ...DEFAULT_SETTINGS.whiteNoise, ...(loaded.settings || {}).whiteNoise }
-      },
+      settings: clampSettings(loaded.settings),
       timer: loaded.timer || {}
     };
     const sel = data.tasks.find(t => t.id === data.selectedTaskId);
@@ -107,6 +149,10 @@ async function init() {
   timer.totalMs = timer.remainMs;
   renderAll();
   if (Notification.permission === 'default') Notification.requestPermission();
+
+  // 読み込み時の警告(破損退避・回復・権限エラー)があればトーストで知らせる。
+  const loadWarning = await window.api.consumeLoadWarning();
+  if (loadWarning) toast(loadWarning);
 }
 
 function renderAll() {
@@ -428,9 +474,13 @@ function renderCycleDots() {
   const wrap = $('#cycleDots');
   wrap.textContent = '';
   const every = data.settings.longEvery;
+  // 長休憩の「間」だけ全点灯にする。長休憩が終わって次のフォーカスへ戻ると
+  // cycle は every の倍数のままなので、mode を条件に含めないと次サイクル開始時も
+  // 4/4 のまま表示されてしまう(長休憩後は 0/4 が自然)。
+  const full = timer.cycle > 0 && timer.cycle % every === 0 && timer.mode === 'long';
   for (let i = 0; i < every; i++) {
     const dot = document.createElement('i');
-    if (i < timer.cycle % every || (timer.cycle > 0 && timer.cycle % every === 0)) dot.classList.add('on');
+    if (i < timer.cycle % every || full) dot.classList.add('on');
     wrap.appendChild(dot);
   }
 }
@@ -1156,6 +1206,7 @@ async function doExport(format) {
   $('#exportMenu').hidden = true;
   const res = await window.api.exportData(format, data);
   if (res.saved) toast(`エクスポートしました: ${res.filePath}`);
+  else if (res.error) toast(`エクスポートに失敗しました: ${res.error}`);
 }
 
 /* ============ イベント ============ */

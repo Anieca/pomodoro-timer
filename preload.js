@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('api', {
   saveData: data => ipcRenderer.invoke('data:save', data),
   // 終了時にレンダラ破棄前の書き込み完了を保証するための同期保存(beforeunload 用)。
   saveDataSync: data => ipcRenderer.sendSync('data:save-sync', data),
+  // 読み込み時の警告(破損退避/回復/権限エラー)を一度だけ回収する。
+  consumeLoadWarning: () => ipcRenderer.invoke('data:consume-warning'),
   exportData: (format, data) => ipcRenderer.invoke('data:export', { format, data }),
   listSounds: () => ipcRenderer.invoke('sounds:list'),
   readSound: name => ipcRenderer.invoke('sounds:read', name),

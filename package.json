@@ -7,6 +7,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
+    "postinstall": "node scripts/ensure-electron.mjs",
     "test": "node scripts/run-tests.mjs",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
@@ -49,8 +50,8 @@
     }
   },
   "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^25.1.8",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
     "playwright-core": "^1.60.0"
   }
 }

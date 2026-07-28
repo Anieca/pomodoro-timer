@@ -99,6 +99,15 @@ console.log('saved tasks:', saved ? saved.tasks.map(t => `${t.title}(${t.complet
 console.log('saved sessions:', saved ? saved.sessions.length : 'none');
 console.log('console errors:', errors.length ? errors : 'none');
 
+const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
+assert(quickAdded.focusTitle === 'クイック追加タスク', 'quick-add sets the focus task');
+assert(quickAdded.inList.includes('クイック追加タスク'), 'quick-added task appears in the list');
+assert(currentTaskIds === 1, 'switching between tasks keeps exactly one selected');
+assert(focusTitle === '設計レビュー' || focusTitle === 'レポート作成', 'focus task is one of the linked tasks');
+assert(!!saved && Array.isArray(saved.sessions), 'data persisted with a sessions array');
+assert(!!saved && saved.tasks.length >= 2, 'added tasks were persisted');
+assert(errors.length === 0, 'no console errors');
+
 await app.close();
 fs.rmSync(userData, { recursive: true, force: true });
-console.log('OK');
+console.log(process.exitCode ? 'DONE (with failures)' : 'OK');

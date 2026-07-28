@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # スモークテストは macOS 版 Electron のバイナリパスを前提にしているため macOS で実行する。
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Syntax check
+        run: |
+          node --check main.js
+          node --check preload.js
+          node --check renderer/app.js
+          node --check renderer/mini.js
+      - name: Smoke tests
+        run: npm test

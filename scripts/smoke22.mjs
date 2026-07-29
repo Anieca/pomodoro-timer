@@ -8,6 +8,7 @@ import * as os from 'node:os';
 //  H) 不正な startedAt/endedAt → RangeError で init が止まらず、履歴も NaN にならない
 //  I) intervals の不正日付・逆転区間 → 落として、正常な区間だけタイムテーブルに出す
 //  K) 区間が全部不正 → 空のまま(旧データの畳み込みと区別し、実働を捏造しない)
+//  L) 片方だけ壊れた日付 → 生きている側と durationSec から復元し、逆転させない
 //  J) タスクの不正な createdAt → CSV 書き出しが "NaN-NaN-NaN" にならない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -131,6 +132,37 @@ const iso = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return d.t
   assert(lens[0] === 0, 'K: 全部不正だった区間は空のまま(span に化かさない)');
   assert(lens[1] === 1, 'K: 区間を持たない旧データは従来どおり1区間に畳む');
   assert(blocks === 1, 'K: タイムテーブルに描くのは旧データ由来の1件だけ');
+
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== L: 片方だけ壊れた日付は生きている側から復元する ===== */
+{
+  const ud = mkdir();
+  const yesterdayEnd = new Date(); yesterdayEnd.setDate(yesterdayEnd.getDate() - 1); yesterdayEnd.setHours(15, 25, 0, 0);
+  fs.writeFileSync(dataFile(ud), JSON.stringify({
+    tasks: [], selectedTaskId: null, settings: {},
+    sessions: [
+      // startedAt だけ壊れた昨日の記録。現在時刻で埋めると今日の集計に混ざり、
+      // かつ startedAt > endedAt の逆転でタイムテーブルからは消える。
+      { id: 's1', mode: 'work', durationSec: 1500, completed: true, startedAt: null, endedAt: yesterdayEnd.toISOString() },
+      // 両方生きているが逆転している場合も durationSec から引き直す
+      { id: 's2', mode: 'work', durationSec: 600, completed: true, startedAt: iso(14, 0), endedAt: iso(13, 0) }
+    ]
+  }));
+
+  const { app, page, errors } = await launch(ud);
+  const got = await page.evaluate(() => data.sessions.map(s => ({ st: s.startedAt, en: s.endedAt })));
+  const todayCount = await page.evaluate(() => document.querySelector('#todayCount').textContent);
+  console.log('L: sessions=', JSON.stringify(got), 'todayCount=', todayCount, 'errors=', errors);
+  assert(errors.length === 0, 'L: コンソール/ページエラーが出ない');
+  assert(got.every(s => Date.parse(s.en) >= Date.parse(s.st)), 'L: 正規化後は必ず開始 <= 終了');
+  assert(Date.parse(got[0].st) === yesterdayEnd.getTime() - 1500 * 1000, 'L: 壊れた開始は終了 - durationSec から復元する');
+  assert(new Date(got[0].st).toDateString() === yesterdayEnd.toDateString(), 'L: 復元した開始は昨日のまま(今日へ飛ばさない)');
+  // 今日の分は s2 のみ。現在時刻で埋めていた頃は昨日の s1 も数えて 2 になっていた。
+  assert(todayCount === '1', 'L: 昨日の記録が今日の集計に混ざらない');
+  assert(Date.parse(got[1].en) - Date.parse(got[1].st) === 600 * 1000, 'L: 逆転していたら durationSec から引き直す');
 
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });

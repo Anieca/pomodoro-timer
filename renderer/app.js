@@ -74,9 +74,18 @@ function normalizeSession(s) {
   const o = s && typeof s === 'object' ? s : {};
   const mode = ['work', 'short', 'long'].includes(o.mode) ? o.mode : 'work';
   const durationSec = Number.isFinite(o.durationSec) && o.durationSec >= 0 ? o.durationSec : 0;
-  const startedAt = parseIso(o.startedAt, new Date().toISOString());
-  // durationSec が巨大で表現範囲を超える場合は 0 長として startedAt に畳む
-  const endedAt = parseIso(o.endedAt, parseIso(Date.parse(startedAt) + durationSec * 1000, startedAt));
+  // 片方だけ壊れている場合は生きている側と durationSec から復元する。現在時刻に
+  // 落とすと、過去の記録が今日の集計に混ざったうえ区間が逆転してタイムテーブル
+  // からは消える(履歴には今日として出るのに帯が無い)という食い違いになる。
+  const rawStart = parseIso(o.startedAt, null);
+  const rawEnd = parseIso(o.endedAt, null);
+  const startedAt = rawStart
+    || (rawEnd ? parseIso(Date.parse(rawEnd) - durationSec * 1000, rawEnd) : new Date().toISOString());
+  // 終了が開始より前(両方生きていても逆転しうる)なら durationSec から引き直す。
+  // durationSec が巨大で Date の表現範囲を超える場合は 0 長として startedAt に畳む。
+  const endedAt = rawEnd && Date.parse(rawEnd) >= Date.parse(startedAt)
+    ? rawEnd
+    : parseIso(Date.parse(startedAt) + durationSec * 1000, startedAt);
   // 区間を持たない旧データ(null)と、持っていたが全部不正だった(空配列)を区別する
   const rawIntervals = Array.isArray(o.intervals) ? o.intervals : null;
   const intervals = (rawIntervals || [])

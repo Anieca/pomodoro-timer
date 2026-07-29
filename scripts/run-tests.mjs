@@ -14,7 +14,8 @@ const TESTS = [
   'smoke17.mjs',
   'smoke18.mjs',
   'smoke19.mjs',
-  'smoke20.mjs'
+  'smoke20.mjs',
+  'smoke21.mjs'
 ];
 
 const run = file => new Promise(resolve => {

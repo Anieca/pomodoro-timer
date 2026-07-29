@@ -30,9 +30,14 @@ const timer = {
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 // 保存は fire-and-forget だが、失敗(容量不足・権限エラー等)は黙殺せず通知する。
+// main が保存を中止した場合はその理由を、読めなかった原本を退避した場合はその旨を出す。
+const SAVE_FAILED = '保存に失敗しました。ディスクの空き容量や権限を確認してください';
 const save = () => window.api.saveData(data).then(
-  res => { if (res && res.ok === false) toast('保存に失敗しました。ディスクの空き容量や権限を確認してください'); },
-  () => toast('保存に失敗しました。ディスクの空き容量や権限を確認してください')
+  res => {
+    if (res && res.ok === false) toast(res.error ? `保存に失敗しました: ${res.error}` : SAVE_FAILED);
+    else if (res && res.preserved) toast(`読み込めなかった元のデータファイルを ${res.preserved} に退避しました`);
+  },
+  () => toast(SAVE_FAILED)
 );
 
 const MODE_LABEL = { work: 'フォーカス', short: '小休憩', long: '長休憩' };

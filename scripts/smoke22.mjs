@@ -7,6 +7,7 @@ import * as os from 'node:os';
 // 混ざっても、起動が落ちず・表示に NaN が出ず・不正区間が黙って化けないこと:
 //  H) 不正な startedAt/endedAt → RangeError で init が止まらず、履歴も NaN にならない
 //  I) intervals の不正日付・逆転区間 → 落として、正常な区間だけタイムテーブルに出す
+//  K) 区間が全部不正 → 空のまま(旧データの畳み込みと区別し、実働を捏造しない)
 //  J) タスクの不正な createdAt → CSV 書き出しが "NaN-NaN-NaN" にならない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -97,6 +98,39 @@ const iso = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return d.t
   assert(kept === 1, 'I: 不正・逆転・0長の区間を落とし、正常な1件だけ残す');
   assert(blocks === 1, 'I: タイムテーブルに正常な区間だけ描画する');
   assert(!geometry.some(g => /NaN/.test(g)), 'I: ブロックの座標に NaN が入らない');
+
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== K: 全部不正だった区間を span に化かさない(旧データの畳み込みとは区別する) ===== */
+{
+  const ud = mkdir();
+  fs.writeFileSync(dataFile(ud), JSON.stringify({
+    tasks: [], selectedTaskId: null, settings: {},
+    sessions: [
+      // 区間を持っていたが全部不正。span に畳むと一時停止していた 9:00〜9:40 まで
+      // 実働として描かれ、次の保存でその捏造が正史になる。
+      {
+        id: 's1', mode: 'work', durationSec: 1500, completed: true,
+        startedAt: iso(9, 0), endedAt: iso(9, 40),
+        intervals: [{ startedAt: 'こわれた', endedAt: 'こわれた' }]
+      },
+      // 区間の概念が無い旧データ。これは従来どおり1区間に畳んでよい。
+      { id: 's2', mode: 'work', durationSec: 1500, completed: true, startedAt: iso(11, 0), endedAt: iso(11, 25) }
+    ]
+  }));
+
+  const { app, page, errors } = await launch(ud);
+  const lens = await page.evaluate(() => data.sessions.map(s => s.intervals.length));
+  await page.evaluate(() => openTimeline());
+  await page.waitForTimeout(300);
+  const blocks = await page.evaluate(() => document.querySelectorAll('#timelineBody .timeline-block').length);
+  console.log('K: intervals=', lens, 'blocks=', blocks, 'errors=', errors);
+  assert(errors.length === 0, 'K: コンソール/ページエラーが出ない');
+  assert(lens[0] === 0, 'K: 全部不正だった区間は空のまま(span に化かさない)');
+  assert(lens[1] === 1, 'K: 区間を持たない旧データは従来どおり1区間に畳む');
+  assert(blocks === 1, 'K: タイムテーブルに描くのは旧データ由来の1件だけ');
 
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });

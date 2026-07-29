@@ -44,8 +44,10 @@ const MODE_LABEL = { work: 'フォーカス', short: '小休憩', long: '長休�
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 const RING_LEN = 2 * Math.PI * 132;
 
-// セッションの実働区間(古い記録は span をフォールバック)
-const sessionIntervals = s => (s.intervals && s.intervals.length ? s.intervals : [{ startedAt: s.startedAt, endedAt: s.endedAt }]);
+// セッションの実働区間(区間を持たない古い記録だけ span をフォールバック)。
+// 正規化済みなら必ず配列を持つので、空配列は「区間が不正で捨てられた」の意。
+// それを span に化かすと実働していない時間まで実働として扱われるため区別する。
+const sessionIntervals = s => (Array.isArray(s.intervals) ? s.intervals : [{ startedAt: s.startedAt, endedAt: s.endedAt }]);
 // Date → "HH:MM"
 const fmtClock = d => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
@@ -75,7 +77,9 @@ function normalizeSession(s) {
   const startedAt = parseIso(o.startedAt, new Date().toISOString());
   // durationSec が巨大で表現範囲を超える場合は 0 長として startedAt に畳む
   const endedAt = parseIso(o.endedAt, parseIso(Date.parse(startedAt) + durationSec * 1000, startedAt));
-  const intervals = (Array.isArray(o.intervals) ? o.intervals : [])
+  // 区間を持たない旧データ(null)と、持っていたが全部不正だった(空配列)を区別する
+  const rawIntervals = Array.isArray(o.intervals) ? o.intervals : null;
+  const intervals = (rawIntervals || [])
     .map(iv => {
       if (!iv || typeof iv !== 'object') return null;
       const st = parseIso(iv.startedAt, null);
@@ -96,7 +100,10 @@ function normalizeSession(s) {
     completed: !!o.completed,
     taskIds: Array.isArray(o.taskIds) ? o.taskIds : [],
     taskTimes,
-    intervals: intervals.length ? intervals : [{ startedAt, endedAt }]
+    // 区間情報を持たない旧データだけ durationSec 長の1区間に畳む。区間はあったが
+    // 全部不正だった場合は空のままにする。span に化かすと一時停止していた時間まで
+    // 実働として描かれ、次の保存でその捏造が正史になってしまう。
+    intervals: rawIntervals ? intervals : [{ startedAt, endedAt }]
   };
 }
 

@@ -2,11 +2,10 @@ import { _electron as electron } from 'playwright-core';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { execFileSync } from 'node:child_process';
 
 // 「原本を読めないまま起動 → 保存で原本を上書き」経路が main 側で閉じているかの検証:
 //  D) 読めない原本 → 保存時に .unreadable- へ退避してから書き込む(原本のバイト列は保全)
-//  E) 退避そのものができない(原本が immutable) → 保存を中止し、原本は無傷のまま
+//  E) 退避そのものができない(rename が権限で失敗) → 保存を中止し、原本は無傷のまま
 //  F) 置き換えデータを書けない → 原本を退避も削除もしない(正本を消してから失敗しない)
 //  G) 最初の保存が終了時の同期保存だった場合 → 退避先をネイティブダイアログで知らせる
 const APP_DIR = path.resolve(import.meta.dirname, '..');
@@ -101,22 +100,24 @@ if (typeof process.getuid === 'function' && process.getuid() === 0) {
   const ud = mkdir();
   fs.writeFileSync(dataFile(ud), ORIGINAL);
   fs.chmodSync(dataFile(ud), 0o000);
-  // uchg は .tmp の作成を妨げずに原本の rename だけを EPERM にする。
-  // ディレクトリごと書き込み不可にすると .tmp の時点で失敗して退避処理に到達しない。
-  execFileSync('chflags', ['uchg', dataFile(ud)]);
+  // 退避(rename)だけを失敗させたい。ディレクトリを書き込み不可にすると rename は
+  // EACCES になるが、.tmp の作成も巻き添えで落ちて退避処理まで到達しない。
+  // .tmp を先に作っておけば「既存ファイルへの上書き」はディレクトリエントリを
+  // 作らないため書き込みは通り、rename だけが落ちる。
+  fs.writeFileSync(dataFile(ud) + '.tmp', '');
+  fs.chmodSync(dataFile(ud) + '.tmp', 0o600);
+  fs.chmodSync(ud, 0o500);
 
   const { app, page } = await launch(ud);
   await addTask(page, '保存されないはずのタスク');
   const notice = await waitToast(page, /中止/);
   console.log('E: toast=', JSON.stringify(notice));
   assert(!notice.hidden && /中止/.test(notice.text), 'E: 退避に失敗したら保存を中止した旨を通知');
-
   assert(fs.existsSync(dataFile(ud)), 'E: 原本が残っている');
   assert(preserved(ud).length === 0, 'E: 退避ファイルは作られない');
-  assert(!fs.existsSync(dataFile(ud) + '.tmp'), 'E: 中途半端な .tmp を残さない');
 
   await app.close();
-  execFileSync('chflags', ['nouchg', dataFile(ud)]);
+  fs.chmodSync(ud, 0o700);
   assert(readForced(dataFile(ud)) === ORIGINAL, 'E: 原本のバイト列は無傷');
   fs.rmSync(ud, { recursive: true, force: true });
 }

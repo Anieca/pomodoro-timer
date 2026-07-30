@@ -44,8 +44,10 @@ const MODE_LABEL = { work: 'フォーカス', short: '小休憩', long: '長休�
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 const RING_LEN = 2 * Math.PI * 132;
 
-// セッションの実働区間(古い記録は span をフォールバック)
-const sessionIntervals = s => (s.intervals && s.intervals.length ? s.intervals : [{ startedAt: s.startedAt, endedAt: s.endedAt }]);
+// セッションの実働区間(区間を持たない古い記録だけ span をフォールバック)。
+// 正規化済みなら必ず配列を持つので、空配列は「区間が不正で捨てられた」の意。
+// それを span に化かすと実働していない時間まで実働として扱われるため区別する。
+const sessionIntervals = s => (Array.isArray(s.intervals) ? s.intervals : [{ startedAt: s.startedAt, endedAt: s.endedAt }]);
 // Date → "HH:MM"
 const fmtClock = d => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
@@ -55,17 +57,61 @@ function modeDurationMs(mode) {
   return min * 60 * 1000;
 }
 
+// 日付を検証して ISO 文字列に揃える(数値に対する clampInt の日付版)。
+// 真偽値チェックだけでは "不明" のような壊れた値が素通りし、
+// new Date(NaN).toISOString() が RangeError を投げたり表示が "NaN:NaN" になる。
+// 読み込んだ日付はすべてここを通してから使う。数値は epoch ミリ秒として扱う。
+function parseIso(v, fallback) {
+  // Date.parse は引数を ToString するため、{"toString": null} のようなオブジェクトでは
+  // NaN ではなく TypeError を投げる(= 起動そのものが止まる)。プリミティブだけ受ける。
+  const t = typeof v === 'number' ? v : typeof v === 'string' ? Date.parse(v) : NaN;
+  // Date の表現範囲(±8.64e15ms)を超えると Invalid Date になり toISOString が throw する
+  return Number.isFinite(t) && Math.abs(t) <= 8.64e15 ? new Date(t).toISOString() : fallback;
+}
+
 // 1件のセッションを正規化する。破損・中間バージョン・型不整合のデータでも
 // taskStats / 履歴 / 削除処理が undefined.includes 等で落ちないよう、配列・数値・
-// mode・区間を必ず補正する。区間が無い旧データは durationSec 長の1区間に畳む。
+// mode・日付・区間を必ず補正する。区間が無い旧データは durationSec 長の1区間に畳む。
 function normalizeSession(s) {
   const o = s && typeof s === 'object' ? s : {};
   const mode = ['work', 'short', 'long'].includes(o.mode) ? o.mode : 'work';
   const durationSec = Number.isFinite(o.durationSec) && o.durationSec >= 0 ? o.durationSec : 0;
-  const startedAt = o.startedAt || new Date().toISOString();
-  const endedAt = o.endedAt || new Date(new Date(startedAt).getTime() + durationSec * 1000).toISOString();
-  const intervals = (Array.isArray(o.intervals) ? o.intervals : [])
-    .filter(iv => iv && iv.startedAt && iv.endedAt);
+  // 区間を持たない旧データ(null)と、持っていたが全部不正だった(空配列)を区別する
+  const rawIntervals = Array.isArray(o.intervals) ? o.intervals : null;
+  const intervals = (rawIntervals || [])
+    .map(iv => {
+      if (!iv || typeof iv !== 'object') return null;
+      const st = parseIso(iv.startedAt, null);
+      const en = parseIso(iv.endedAt, null);
+      // 不正な日付・逆転・0長の区間はタイムテーブルで潰れて消えるだけなので落とす
+      return st && en && Date.parse(en) > Date.parse(st) ? { ...iv, startedAt: st, endedAt: en } : null;
+    })
+    .filter(Boolean);
+  // 端点の復元材料。durationSec は実働のみで一時停止を含まないため、それだけで
+  // 引き直すと壁時計上の span が実際より短くなり、日付をまたぐ記録が別の日へ
+  // ずれる。区間が生きていればそちらが実際の端点なので優先する。
+  // 区間は時系列順とは限らないので最小 / 最大で取る。件数が多いと Math.min(...arr) は
+  // 引数の上限で RangeError になり復旧経路自体が落ちるため、畳み込みで求める。
+  let minMs = Infinity, maxMs = -Infinity;
+  for (const iv of intervals) {
+    minMs = Math.min(minMs, Date.parse(iv.startedAt));
+    maxMs = Math.max(maxMs, Date.parse(iv.endedAt));
+  }
+  const ivStart = intervals.length ? new Date(minMs).toISOString() : null;
+  const ivEnd = intervals.length ? new Date(maxMs).toISOString() : null;
+  // 片方だけ壊れている場合は生きている側(区間 → durationSec の順)から復元する。
+  // 現在時刻に落とすと、過去の記録が今日の集計に混ざったうえ区間が逆転して
+  // タイムテーブルからは消える(履歴には今日として出るのに帯が無い)。
+  const rawStart = parseIso(o.startedAt, null);
+  const rawEnd = parseIso(o.endedAt, null);
+  const startedAt = rawStart || ivStart
+    || (rawEnd ? parseIso(Date.parse(rawEnd) - durationSec * 1000, rawEnd) : new Date().toISOString());
+  // 終了が開始より前(両方生きていても逆転しうる)なら引き直す。
+  // durationSec が巨大で Date の表現範囲を超える場合は 0 長として startedAt に畳む。
+  const endedAt = rawEnd && Date.parse(rawEnd) >= Date.parse(startedAt)
+    ? rawEnd
+    : (ivEnd && Date.parse(ivEnd) >= Date.parse(startedAt) ? ivEnd
+      : parseIso(Date.parse(startedAt) + durationSec * 1000, startedAt));
   const taskTimes = (Array.isArray(o.taskTimes) ? o.taskTimes : [])
     .filter(tt => tt && typeof tt === 'object' && Number.isFinite(tt.durationSec));
   return {
@@ -78,7 +124,10 @@ function normalizeSession(s) {
     completed: !!o.completed,
     taskIds: Array.isArray(o.taskIds) ? o.taskIds : [],
     taskTimes,
-    intervals: intervals.length ? intervals : [{ startedAt, endedAt }]
+    // 区間情報を持たない旧データだけ durationSec 長の1区間に畳む。区間はあったが
+    // 全部不正だった場合は空のままにする。span に化かすと一時停止していた時間まで
+    // 実働として描かれ、次の保存でその捏造が正史になってしまう。
+    intervals: rawIntervals ? intervals : [{ startedAt, endedAt }]
   };
 }
 
@@ -134,7 +183,18 @@ async function init() {
     data = {
       tasks: (Array.isArray(loaded.tasks) ? loaded.tasks : [])
         .filter(t => t && typeof t === 'object' && t.id)
-        .map(t => ({ ...t, title: String(t.title ?? ''), completed: !!t.completed })),
+        .map(t => ({
+          ...t,
+          title: String(t.title ?? ''),
+          completed: !!t.completed,
+          // CSV 書き出し(main の fmtDate)が "NaN-NaN-NaN" を吐かないよう日付も揃える。
+          // 現在時刻で埋めると「今日作った」と偽ったうえ保存まで起動ごとに変わるので、
+          // 分からないものは null にする(fmtDate は null を空欄として書き出す)。
+          createdAt: parseIso(t.createdAt, null),
+          // 未完了(null/undefined)だけを素通しする。truthy 判定にすると
+          // epoch ミリ秒の 0 という有効な日付を未完了に化かしてしまう。
+          completedAt: t.completedAt == null ? null : parseIso(t.completedAt, null)
+        })),
       sessions: migrateSessions(loaded),
       selectedTaskId: loaded.selectedTaskId || null,
       settings: clampSettings(loaded.settings),

@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { normalizeData, DEFAULT_SETTINGS } = require('./shared/schema');
 
 if (process.env.POMODORO_USER_DATA) app.setPath('userData', process.env.POMODORO_USER_DATA);
 
@@ -311,8 +312,28 @@ let pendingLoadWarning = null;
 // 保存を止める権威は main が持つ。詳細は preserveUnreadable() を参照。
 let unreadableOriginal = null;
 
-ipcMain.handle('data:load', e => {
-  if (!isTrusted(e)) return null;
+// 保存データの正本。main が持ち、正規化を通ったものだけを入れる。レンダラへは
+// このスナップショットを配るだけで、レンダラ側では検証しない(できない)。
+let store = normalizeData(null);
+
+// 正本を差し替えて、書き込み元以外の全ウィンドウへ配る。引数は正規化済みであること。
+//
+// 書き込み元へ送り返さないのは、丸ごと置換の保存 API では取りこぼしが起きるため。
+// 保存1の応答が届くまでに編集2が入っていると、返ってきた古いスナップショットで
+// 上書きされて編集2が画面から消え、その状態で次の保存が走れば本当に失われる。
+// 書き込み元は自分が送った内容を既に持っているので、送り返す必要もない。
+// (main 自身が書き手になる段階では、丸ごと置換をやめて intent 化する必要がある)
+function publish(normalized, exceptWc) {
+  store = normalized;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed() && win.webContents !== exceptWc) win.webContents.send('data:snapshot', store);
+  }
+  return store;
+}
+
+const setStore = (raw, exceptWc) => publish(normalizeData(raw), exceptWc);
+
+function readDataFile() {
   const file = DATA_FILE();
   let raw;
   try {
@@ -344,7 +365,19 @@ ipcMain.handle('data:load', e => {
     pendingLoadWarning = '保存ファイルが破損していたため退避し、空の状態で起動しました(元ファイルは .corrupt- として保存)。';
     return null;
   }
+}
+
+// ディスクから読み直して正本に入れる。以降レンダラが受け取るのはこの結果だけ。
+// 二重に呼ばれても(ウィンドウ再生成など)同じ結果になる。
+ipcMain.handle('data:load', e => {
+  if (!isTrusted(e)) return null;
+  return setStore(readDataFile(), e.sender);   // 呼び出し元へは戻り値で渡る
 });
+
+// preload がウィンドウ生成直後に同期で取りに来る。isTrusted は使えない
+// (mainWin.webContents はまだこの sender と結び付いていないことがある)が、
+// 返すのは定数の既定値だけで、渡す情報は無い。
+ipcMain.on('data:defaults', e => { e.returnValue = DEFAULT_SETTINGS; });
 
 // 読み込み時警告を一度だけ回収する(レンダラがトースト表示に使う)。
 ipcMain.handle('data:consume-warning', e => {
@@ -389,7 +422,11 @@ function gateWrite() {
 // 順序が重要:置き換えデータを .tmp に書き切ってから原本を退避する。先に退避すると、
 // 直後の書き込みが失敗(容量不足等)した場合に正本が消え、次回起動が ENOENT =初回起動
 // として黙って空で始まってしまう(退避先を誰も知らないまま残る)。
-function writeData(data) {
+// 受け取った内容を正規化してから書く。レンダラを信用して素通しすると、あちらの
+// バグや範囲外の入力(設定ダイアログの数値など)がそのまま正史になり、次回起動の
+// 読み込み側正規化で黙って別の値に化ける。ディスクに出るのは常に正規形にする。
+function writeData(raw, senderWc) {
+  const data = normalizeData(raw);
   const tmp = DATA_FILE() + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
   let preserved;
@@ -400,13 +437,16 @@ function writeData(data) {
     throw err;
   }
   fs.renameSync(tmp, DATA_FILE());
+  // ディスクに乗ってから配る。書けなかった内容を正本として配ると、
+  // 画面には残っているのに次回起動では無い、という食い違いになる。
+  publish(data, senderWc);
   return preserved;
 }
 
 ipcMain.handle('data:save', (e, data) => {
   if (!isTrusted(e)) return { ok: false, error: 'untrusted sender' };
   try {
-    const preserved = writeData(data);
+    const preserved = writeData(data, e.sender);
     // 原本を退避したことは黙らせない(レンダラがトーストで知らせる)。
     return preserved ? { ok: true, preserved } : { ok: true };
   } catch (err) {
@@ -419,7 +459,7 @@ ipcMain.handle('data:save', (e, data) => {
 ipcMain.on('data:save-sync', (e, data) => {
   if (!isTrusted(e)) { e.returnValue = { ok: false, error: 'untrusted sender' }; return; }
   try {
-    const preserved = writeData(data);
+    const preserved = writeData(data, e.sender);
     // 何も保存せずに終了/リロードした場合、原本を退避するのはこの同期保存が最初になる。
     // 呼び出し元(beforeunload)は戻り値を使えずトーストも出せないため、退避先を伝える
     // 手段がここしかない。黙って移すと次回起動は普通に空で開き、原本を追えなくなる。
@@ -513,7 +553,10 @@ function fmtDate(iso) {
 
 ipcMain.handle('data:export', async (e, payload) => {
   if (!isTrusted(e)) return { saved: false, error: 'untrusted sender' };
-  const { format, data } = payload || {};
+  // 書き出すのは正本。レンダラから受け取った blob を書き出していた頃は、
+  // 保存されていない内容や検証を通っていない値がそのまま出力されえた。
+  const { format } = payload || {};
+  const data = store;
   const stamp = new Date().toISOString().slice(0, 10);
   const defs = {
     json: { name: `pomodoro-export-${stamp}.json`, filters: [{ name: 'JSON', extensions: ['json'] }] },

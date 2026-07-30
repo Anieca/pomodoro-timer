@@ -26,6 +26,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "shared/**/*",
       "renderer/**/*",
       "assets/**/*",
       "build/icon.png"

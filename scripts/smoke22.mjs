@@ -9,6 +9,8 @@ import * as os from 'node:os';
 //  I) intervals の不正日付・逆転区間 → 落として、正常な区間だけタイムテーブルに出す
 //  K) 区間が全部不正 → 空のまま(旧データの畳み込みと区別し、実働を捏造しない)
 //  L) 片方だけ壊れた日付 → 生きている側と durationSec から復元し、逆転させない
+//  M) 一時停止を挟んだ記録 → 端点は durationSec ではなく生きている区間から復元する
+//  N) タスクの completedAt: 0(epoch) → 有効な日付として扱い、未完了に化かさない
 //  J) タスクの不正な createdAt → CSV 書き出しが "NaN-NaN-NaN" にならない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -163,6 +165,79 @@ const iso = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return d.t
   // 今日の分は s2 のみ。現在時刻で埋めていた頃は昨日の s1 も数えて 2 になっていた。
   assert(todayCount === '1', 'L: 昨日の記録が今日の集計に混ざらない');
   assert(Date.parse(got[1].en) - Date.parse(got[1].st) === 600 * 1000, 'L: 逆転していたら durationSec から引き直す');
+
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== M: 端点の復元は durationSec より生きている区間を優先する ===== */
+{
+  const ud = mkdir();
+  // 昨日 23:30〜23:40 作業 → 長い中断 → 今日 00:10〜00:20 作業。実働は 20 分だが
+  // 壁時計の span は 50 分。durationSec だけで引き直すと開始が今日 00:00 になり、
+  // 昨日の区間が自分のセッションの範囲外へはみ出す。
+  const at = (dayOffset, h, m) => { const d = new Date(); d.setDate(d.getDate() + dayOffset); d.setHours(h, m, 0, 0); return d; };
+  const ivA = [at(-1, 23, 30), at(-1, 23, 40)];
+  const ivB = [at(0, 0, 10), at(0, 0, 20)];
+  fs.writeFileSync(dataFile(ud), JSON.stringify({
+    tasks: [], selectedTaskId: null, settings: {},
+    sessions: [
+      // 開始だけ壊れている
+      {
+        id: 's1', mode: 'work', durationSec: 1200, completed: true,
+        startedAt: 'こわれた', endedAt: ivB[1].toISOString(),
+        // 時系列順に並んでいない(min/max で取らないと端点を取り違える)
+        intervals: [
+          { startedAt: ivB[0].toISOString(), endedAt: ivB[1].toISOString() },
+          { startedAt: ivA[0].toISOString(), endedAt: ivA[1].toISOString() }
+        ]
+      },
+      // 終了だけ壊れている
+      {
+        id: 's2', mode: 'work', durationSec: 1200, completed: true,
+        startedAt: ivA[0].toISOString(), endedAt: null,
+        intervals: [
+          { startedAt: ivA[0].toISOString(), endedAt: ivA[1].toISOString() },
+          { startedAt: ivB[0].toISOString(), endedAt: ivB[1].toISOString() }
+        ]
+      }
+    ]
+  }));
+
+  const { app, page, errors } = await launch(ud);
+  const got = await page.evaluate(() => data.sessions.map(s => ({ st: s.startedAt, en: s.endedAt, n: s.intervals.length })));
+  console.log('M: sessions=', JSON.stringify(got), 'errors=', errors);
+  assert(errors.length === 0, 'M: コンソール/ページエラーが出ない');
+  assert(got.every(s => s.n === 2), 'M: 正常な区間は2件とも残る');
+  // durationSec(1200秒)で引き直していた頃は今日 00:00 になっていた
+  assert(Date.parse(got[0].st) === ivA[0].getTime(), 'M: 壊れた開始は最も早い区間の開始から復元する');
+  assert(new Date(got[0].st).toDateString() === ivA[0].toDateString(), 'M: 復元した開始は昨日のまま');
+  assert(Date.parse(got[1].en) === ivB[1].getTime(), 'M: 壊れた終了は最も遅い区間の終了から復元する');
+  assert(got.every(s => Date.parse(s.en) - Date.parse(s.st) === ivB[1] - ivA[0]), 'M: 端点は実働ではなく壁時計の範囲を表す');
+
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== N: completedAt: 0 は有効な日付として扱う ===== */
+{
+  const ud = mkdir();
+  fs.writeFileSync(dataFile(ud), JSON.stringify({
+    sessions: [], selectedTaskId: null, settings: {},
+    tasks: [
+      // epoch ミリ秒の 0。truthy 判定で弾いていた頃は完了日が消えていた。
+      { id: 't1', title: 'epoch に完了', completed: true, createdAt: 0, completedAt: 0 },
+      { id: 't2', title: '未完了', completed: false, createdAt: iso(9, 0), completedAt: null }
+    ]
+  }));
+
+  const { app, page, errors } = await launch(ud);
+  const got = await page.evaluate(() => data.tasks.map(t => [t.createdAt, t.completedAt]));
+  console.log('N: tasks=', JSON.stringify(got), 'errors=', errors);
+  assert(errors.length === 0, 'N: コンソール/ページエラーが出ない');
+  assert(got[0][1] === new Date(0).toISOString(), 'N: completedAt: 0 を捨てず epoch として保つ');
+  assert(got[0][0] === new Date(0).toISOString(), 'N: createdAt: 0 も epoch として保つ');
+  assert(got[1][1] === null, 'N: 未完了タスクの completedAt は null のまま');
 
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });

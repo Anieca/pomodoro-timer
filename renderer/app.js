@@ -74,18 +74,6 @@ function normalizeSession(s) {
   const o = s && typeof s === 'object' ? s : {};
   const mode = ['work', 'short', 'long'].includes(o.mode) ? o.mode : 'work';
   const durationSec = Number.isFinite(o.durationSec) && o.durationSec >= 0 ? o.durationSec : 0;
-  // 片方だけ壊れている場合は生きている側と durationSec から復元する。現在時刻に
-  // 落とすと、過去の記録が今日の集計に混ざったうえ区間が逆転してタイムテーブル
-  // からは消える(履歴には今日として出るのに帯が無い)という食い違いになる。
-  const rawStart = parseIso(o.startedAt, null);
-  const rawEnd = parseIso(o.endedAt, null);
-  const startedAt = rawStart
-    || (rawEnd ? parseIso(Date.parse(rawEnd) - durationSec * 1000, rawEnd) : new Date().toISOString());
-  // 終了が開始より前(両方生きていても逆転しうる)なら durationSec から引き直す。
-  // durationSec が巨大で Date の表現範囲を超える場合は 0 長として startedAt に畳む。
-  const endedAt = rawEnd && Date.parse(rawEnd) >= Date.parse(startedAt)
-    ? rawEnd
-    : parseIso(Date.parse(startedAt) + durationSec * 1000, startedAt);
   // 区間を持たない旧データ(null)と、持っていたが全部不正だった(空配列)を区別する
   const rawIntervals = Array.isArray(o.intervals) ? o.intervals : null;
   const intervals = (rawIntervals || [])
@@ -97,6 +85,25 @@ function normalizeSession(s) {
       return st && en && Date.parse(en) > Date.parse(st) ? { ...iv, startedAt: st, endedAt: en } : null;
     })
     .filter(Boolean);
+  // 端点の復元材料。durationSec は実働のみで一時停止を含まないため、それだけで
+  // 引き直すと壁時計上の span が実際より短くなり、日付をまたぐ記録が別の日へ
+  // ずれる。区間が生きていればそちらが実際の端点なので優先する。
+  // 区間は時系列順とは限らないので min / max で取る。
+  const ivStart = intervals.length ? new Date(Math.min(...intervals.map(iv => Date.parse(iv.startedAt)))).toISOString() : null;
+  const ivEnd = intervals.length ? new Date(Math.max(...intervals.map(iv => Date.parse(iv.endedAt)))).toISOString() : null;
+  // 片方だけ壊れている場合は生きている側(区間 → durationSec の順)から復元する。
+  // 現在時刻に落とすと、過去の記録が今日の集計に混ざったうえ区間が逆転して
+  // タイムテーブルからは消える(履歴には今日として出るのに帯が無い)。
+  const rawStart = parseIso(o.startedAt, null);
+  const rawEnd = parseIso(o.endedAt, null);
+  const startedAt = rawStart || ivStart
+    || (rawEnd ? parseIso(Date.parse(rawEnd) - durationSec * 1000, rawEnd) : new Date().toISOString());
+  // 終了が開始より前(両方生きていても逆転しうる)なら引き直す。
+  // durationSec が巨大で Date の表現範囲を超える場合は 0 長として startedAt に畳む。
+  const endedAt = rawEnd && Date.parse(rawEnd) >= Date.parse(startedAt)
+    ? rawEnd
+    : (ivEnd && Date.parse(ivEnd) >= Date.parse(startedAt) ? ivEnd
+      : parseIso(Date.parse(startedAt) + durationSec * 1000, startedAt));
   const taskTimes = (Array.isArray(o.taskTimes) ? o.taskTimes : [])
     .filter(tt => tt && typeof tt === 'object' && Number.isFinite(tt.durationSec));
   return {
@@ -174,7 +181,9 @@ async function init() {
           completed: !!t.completed,
           // CSV 書き出し(main の fmtDate)が "NaN-NaN-NaN" を吐かないよう日付も揃える
           createdAt: parseIso(t.createdAt, new Date().toISOString()),
-          completedAt: t.completedAt ? parseIso(t.completedAt, null) : null
+          // 未完了(null/undefined)だけを素通しする。truthy 判定にすると
+          // epoch ミリ秒の 0 という有効な日付を未完了に化かしてしまう。
+          completedAt: t.completedAt == null ? null : parseIso(t.completedAt, null)
         })),
       sessions: migrateSessions(loaded),
       selectedTaskId: loaded.selectedTaskId || null,

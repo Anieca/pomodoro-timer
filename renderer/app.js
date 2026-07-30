@@ -62,7 +62,9 @@ function modeDurationMs(mode) {
 // new Date(NaN).toISOString() が RangeError を投げたり表示が "NaN:NaN" になる。
 // 読み込んだ日付はすべてここを通してから使う。数値は epoch ミリ秒として扱う。
 function parseIso(v, fallback) {
-  const t = typeof v === 'number' ? v : Date.parse(v);
+  // Date.parse は引数を ToString するため、{"toString": null} のようなオブジェクトでは
+  // NaN ではなく TypeError を投げる(= 起動そのものが止まる)。プリミティブだけ受ける。
+  const t = typeof v === 'number' ? v : typeof v === 'string' ? Date.parse(v) : NaN;
   // Date の表現範囲(±8.64e15ms)を超えると Invalid Date になり toISOString が throw する
   return Number.isFinite(t) && Math.abs(t) <= 8.64e15 ? new Date(t).toISOString() : fallback;
 }
@@ -88,9 +90,15 @@ function normalizeSession(s) {
   // 端点の復元材料。durationSec は実働のみで一時停止を含まないため、それだけで
   // 引き直すと壁時計上の span が実際より短くなり、日付をまたぐ記録が別の日へ
   // ずれる。区間が生きていればそちらが実際の端点なので優先する。
-  // 区間は時系列順とは限らないので min / max で取る。
-  const ivStart = intervals.length ? new Date(Math.min(...intervals.map(iv => Date.parse(iv.startedAt)))).toISOString() : null;
-  const ivEnd = intervals.length ? new Date(Math.max(...intervals.map(iv => Date.parse(iv.endedAt)))).toISOString() : null;
+  // 区間は時系列順とは限らないので最小 / 最大で取る。件数が多いと Math.min(...arr) は
+  // 引数の上限で RangeError になり復旧経路自体が落ちるため、畳み込みで求める。
+  let minMs = Infinity, maxMs = -Infinity;
+  for (const iv of intervals) {
+    minMs = Math.min(minMs, Date.parse(iv.startedAt));
+    maxMs = Math.max(maxMs, Date.parse(iv.endedAt));
+  }
+  const ivStart = intervals.length ? new Date(minMs).toISOString() : null;
+  const ivEnd = intervals.length ? new Date(maxMs).toISOString() : null;
   // 片方だけ壊れている場合は生きている側(区間 → durationSec の順)から復元する。
   // 現在時刻に落とすと、過去の記録が今日の集計に混ざったうえ区間が逆転して
   // タイムテーブルからは消える(履歴には今日として出るのに帯が無い)。
@@ -179,8 +187,10 @@ async function init() {
           ...t,
           title: String(t.title ?? ''),
           completed: !!t.completed,
-          // CSV 書き出し(main の fmtDate)が "NaN-NaN-NaN" を吐かないよう日付も揃える
-          createdAt: parseIso(t.createdAt, new Date().toISOString()),
+          // CSV 書き出し(main の fmtDate)が "NaN-NaN-NaN" を吐かないよう日付も揃える。
+          // 現在時刻で埋めると「今日作った」と偽ったうえ保存まで起動ごとに変わるので、
+          // 分からないものは null にする(fmtDate は null を空欄として書き出す)。
+          createdAt: parseIso(t.createdAt, null),
           // 未完了(null/undefined)だけを素通しする。truthy 判定にすると
           // epoch ミリ秒の 0 という有効な日付を未完了に化かしてしまう。
           completedAt: t.completedAt == null ? null : parseIso(t.completedAt, null)

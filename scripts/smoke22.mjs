@@ -251,7 +251,10 @@ const iso = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return d.t
     sessions: [], selectedTaskId: null, settings: {},
     tasks: [
       { id: 't1', title: '壊れた作成日', completed: false, createdAt: 'いつか', completedAt: null },
-      { id: 't2', title: '壊れた完了日', completed: true, createdAt: iso(9, 0), completedAt: {} }
+      { id: 't2', title: '壊れた完了日', completed: true, createdAt: iso(9, 0), completedAt: {} },
+      // ToString で TypeError を投げる値(Date.parse は引数を ToString するため、
+      // NaN ではなく例外になり init ごと止まっていた)
+      { id: 't3', title: '文字列化できない日付', completed: false, createdAt: { toString: null }, completedAt: null }
     ]
   }));
 
@@ -266,6 +269,9 @@ const iso = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return d.t
   assert(res && res.saved === true, 'J: CSV を書き出せる');
   assert(!/NaN/.test(body), 'J: CSV に NaN を書き出さない');
   assert(/壊れた作成日/.test(body) && /壊れた完了日/.test(body), 'J: タスク自体は落とさない');
+  assert(/文字列化できない日付/.test(body), 'J: ToString で例外になる日付でも起動して書き出せる');
+  // 現在時刻で埋めると「今日作った」と偽り、保存するまで起動ごとに値が変わる
+  assert(/^t1,壊れた作成日,未完了,,,/m.test(body), 'J: 分からない作成日は空欄にする(今日として捏造しない)');
 
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });

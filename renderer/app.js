@@ -64,6 +64,9 @@ async function init() {
     else if (cmd === 'skip') { if (timer.mode !== 'work' && timer.status !== 'idle') skipBreak(); }
     else if (cmd === 'stop') stopEarly();
   });
+  // スリープ復帰の補正。取りこぼすと睡眠時間が実働として記録に残るため、
+  // タイマー操作と同じく await より前に登録する。
+  window.api.onPowerResume(applySleep);
 
   // 保存中に main の正規化で値が直された場合、そのスナップショットが返ってくる。
   // 受け取ったものを正本として描き直すので、画面と保存内容が食い違わない。
@@ -265,6 +268,39 @@ function closeInterval() {
     endedAt: new Date(endMs).toISOString()
   });
   c.intStartAt = null;
+}
+
+// システムスリープからの復帰。眠っていた間は作業していないので、実働区間を
+// 眠りに落ちた時刻で閉じ、復帰時刻から開き直す。あわせて眠っていた分だけ予定終了を
+// 後ろへずらす(= スリープを一時停止と同じ扱いにする)。
+//
+// ずらすのは残り時間を保つためだけではない。タスク別の時間(segments)は
+// pomoElapsedMs() = totalMs -(endAt - now)から出るので、endAt を睡眠分ずらすと
+// 復帰直後の経過時間が眠りに落ちた時点と一致し、セグメント側も自動的に睡眠を含まない。
+//
+// 補正しない場合、蓋を閉じて3時間後に開けると「25分集中した」ことになってしまう
+// (復帰時の tick が予定終了超過を検知して完了扱いにし、区間は endAt でクリップされる)。
+function applySleep(span) {
+  const c = timer.current;
+  if (timer.status !== 'running' || !c) return;   // 一時停止・アイドル中は残り時間が凍結済み
+  const { suspendAt, resumeAt } = span || {};
+  if (!Number.isFinite(suspendAt) || !Number.isFinite(resumeAt) || resumeAt <= suspendAt) return;
+
+  // 眠りに落ちた時刻で区間を閉じる。予定終了より後に眠ったなら実働は endAt 止まり。
+  if (c.intStartAt) {
+    const endMs = Math.min(suspendAt, timer.endAt);
+    if (endMs > c.intStartAt) {
+      c.intervals.push({
+        startedAt: new Date(c.intStartAt).toISOString(),
+        endedAt: new Date(endMs).toISOString()
+      });
+    }
+    // 区間ごと睡眠に飲まれていた場合(endMs <= intStartAt)は実働ゼロなので積まない
+    c.intStartAt = resumeAt;
+  }
+  // 眠る前に既に予定終了を過ぎていたなら、そのまま完了させる(先延ばしにしない)
+  if (suspendAt < timer.endAt) timer.endAt += resumeAt - suspendAt;
+  renderTimer();
 }
 
 // 現在のセグメントを確定して segments に積む

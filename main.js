@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { normalizeData, DEFAULT_SETTINGS } = require('./shared/schema');
@@ -255,6 +255,33 @@ function applyState(raw) {
   if (miniWin && !miniWin.isDestroyed()) miniWin.webContents.send('timer:state', s);
 }
 
+/* ============ システムスリープ ============ */
+// 眠っていた間は作業していないので、実働から除けるよう両端の時刻をレンダラへ渡す。
+//
+// 時刻を持つのが main なのは、suspend の通知をレンダラが処理し切る前にプロセスが
+// 凍結されうるため。片方でも取り逃すと睡眠時間が分からず、いま実働として計上されて
+// いる分(下記)を直せない。復帰時にまとめて伝えれば取りこぼしがない。
+//
+// 現状レンダラは、復帰時の tick で予定終了(endAt)を過ぎているのを見つけて
+// セッションを完了させる。実働区間は endAt でクリップされるため実時間が数時間に
+// 膨らむことはないが、逆に「予定していた25分ぶんを丸ごと実働として計上する」ことに
+// なっている。蓋を閉じて3時間後に開けても 25 分集中したことになってしまう。
+let suspendedAt = null;
+
+function watchPower() {
+  powerMonitor.on('suspend', () => { suspendedAt = Date.now(); });
+  powerMonitor.on('resume', () => {
+    const suspendAt = suspendedAt;
+    suspendedAt = null;
+    // suspend を観測できていない、または時計が巻き戻った場合は何も補正しない
+    // (誤った補正は実働の捏造になるので、分からないときは触らない)。
+    if (suspendAt === null) return;
+    const resumeAt = Date.now();
+    if (!(resumeAt > suspendAt)) return;
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('power:resume', { suspendAt, resumeAt });
+  });
+}
+
 app.whenReady().then(() => {
   // ユーザーが音源を置けるフォルダを用意しておく(配布版でも追加できるように)
   try { fs.mkdirSync(USER_SOUNDS_DIR(), { recursive: true }); } catch {}
@@ -265,6 +292,7 @@ app.whenReady().then(() => {
   }
   createWindow();
   createTray();
+  watchPower();
   app.on('activate', () => {
     if (mainWin && !mainWin.isDestroyed()) { mainWin.show(); return; }
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -257,6 +257,9 @@ function pomoElapsedMs() {
 // 実働区間を開く/閉じる(一時停止・再開・終了の境界で壁時計の絶対時刻を記録)
 function openInterval() {
   if (timer.current) timer.current.intStartAt = Date.now();
+  // 最初の tick(250ms 後)より前に眠った場合の代用値。前の区間の値が残っていると
+  // wakeIfSleeping が「区間より前」の時刻を渡してしまい、補正が捨てられる。
+  timer.lastTickAt = Date.now();
 }
 function closeInterval() {
   const c = timer.current;
@@ -328,6 +331,10 @@ function applySleep(span) {
 
 // 現在のセグメントを確定して segments に積む
 function closeSegment() {
+  // セグメントは経過時間(= endAt 基準)から出るので、睡眠分を endAt へ反映する前に
+  // 区切ると残り時間まるごとが直前のタスクに付いてしまう。あとから applySleep が
+  // 届いても確定済みの segments は直せないため、ここで先に補正しておく。
+  wakeIfSleeping();
   const c = timer.current;
   if (!c) return;
   const durMs = pomoElapsedMs() - c.segStartMs;
@@ -507,6 +514,7 @@ function startPauseResume() {
       segTaskId: timer.mode === 'work' ? (data.selectedTaskId || null) : null,
       segStartMs: 0
     };
+    timer.lastTickAt = Date.now();
     timer.intervalId = setInterval(tick, 250);
   } else if (timer.status === 'running') {
     timer.remainMs = Math.max(0, timer.endAt - Date.now());

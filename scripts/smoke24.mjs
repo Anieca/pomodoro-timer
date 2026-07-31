@@ -18,6 +18,7 @@ import * as os from 'node:os';
 //  X) 復帰直後の tick が補正を追い越してセッションを完了させない
 //  Y) 復帰後に始まったセッションには補正を適用しない
 //  Z) 復帰通知より先に停止されても睡眠は記録に残さない
+//  AA) 復帰通知より先にタスクを切り替えても睡眠が前のタスクに付かない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
@@ -243,6 +244,38 @@ let tGot;                                   // U でも同じセッションの�
   console.log('Z: saved durationSec=', last && last.durationSec);
   assert(last && Math.abs(last.durationSec - 300) < 10, 'Z: 停止が先でも実働は5分(3時間の睡眠を含まない)');
   assert(await page.evaluate(() => timer.sleeping === false), 'Z: 停止後にスリープ状態が残らない');
+}
+
+/* ===== AA: 復帰通知より先のタスク切り替えでも睡眠を前のタスクに付けない ===== */
+{
+  // セグメントは経過時間(endAt 基準)から出る。補正前に区切ると「残り時間まるごと」が
+  // 直前のタスクに付き、あとから applySleep が届いても確定済みの segments は直せない。
+  const got = await page.evaluate(H => {
+    const now = Date.now();
+    if (timer.status !== 'idle') stopEarly();
+    const a = addTask('スリープ検証A');
+    const b = addTask('スリープ検証B');
+    selectTask(a.id);
+    timer.mode = 'work';
+    startPauseResume();
+    timer.totalMs = 25 * 60 * 1000;
+    // 3時間前に眠り、その5分前から A に取り組んでいた
+    timer.current.startedAt = new Date(now - H - 5 * 60 * 1000).toISOString();
+    timer.current.intStartAt = now - H - 5 * 60 * 1000;
+    timer.endAt = now - H + 20 * 60 * 1000;
+    timer.lastTickAt = now - H;
+    beginSleep();
+    selectTask(b.id);                           // 復帰通知より先にユーザーが切り替えた
+    return {
+      segs: timer.current.segments.map(s => Math.round(s.durationSec / 60)),
+      firstIsA: timer.current.segments[0] && timer.current.segments[0].taskId === a.id
+    };
+  }, H3);
+  console.log('AA:', JSON.stringify(got));
+  assert(got.segs.length === 1 && got.firstIsA, 'AA: 切り替え時に直前のタスクの区間を確定する');
+  assert(got.segs[0] === 5, 'AA: 前のタスクに付くのは5分(3時間の睡眠を含まない)');
+  await page.evaluate(() => stopEarly());
+  await page.waitForTimeout(300);
 }
 
 /* ===== 不正な span で壊れない ===== */

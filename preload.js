@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('api', {
   pushTimerState: state => ipcRenderer.send('timer:state', state),
   // main → メインウィンドウ:Tray/ミニから来た操作を本体タイマーに反映させる。
   onTimerCommand: cb => ipcRenderer.on('timer:command', (_e, cmd) => cb(cmd)),
+  // main → メインウィンドウ:システムがスリープに入る。復帰の補正が届くまで完了判定を止める。
+  onPowerSuspend: cb => ipcRenderer.on('power:suspend', () => cb()),
   // main → メインウィンドウ:システムスリープから復帰した。眠っていた区間を実働から除く。
   onPowerResume: cb => ipcRenderer.on('power:resume', (_e, span) => cb(span)),
   // main → ミニウィンドウ:最新のタイマー状態を受け取って描画する。

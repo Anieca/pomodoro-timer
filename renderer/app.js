@@ -21,7 +21,8 @@ const timer = {
   remainMs: 0,
   intervalId: null,
   cycle: 0,              // 長休憩までの完了ポモドーロ数
-  current: null
+  current: null,
+  sleeping: false        // システムスリープ中(復帰の補正が届くまで完了判定を止める)
 };
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -64,8 +65,9 @@ async function init() {
     else if (cmd === 'skip') { if (timer.mode !== 'work' && timer.status !== 'idle') skipBreak(); }
     else if (cmd === 'stop') stopEarly();
   });
-  // スリープ復帰の補正。取りこぼすと睡眠時間が実働として記録に残るため、
+  // スリープ前後の通知。取りこぼすと睡眠時間が実働として記録に残るため、
   // タイマー操作と同じく await より前に登録する。
+  window.api.onPowerSuspend(beginSleep);
   window.api.onPowerResume(applySleep);
 
   // 保存中に main の正規化で値が直された場合、そのスナップショットが返ってくる。
@@ -280,12 +282,21 @@ function closeInterval() {
 //
 // 補正しない場合、蓋を閉じて3時間後に開けると「25分集中した」ことになってしまう
 // (復帰時の tick が予定終了超過を検知して完了扱いにし、区間は endAt でクリップされる)。
+// 眠りに落ちる直前。復帰後の tick が補正より先に走って「予定終了を過ぎた」と
+// 判定するのを防ぐため、完了判定を止めておく(解除は applySleep か手動操作)。
+function beginSleep() {
+  timer.sleeping = true;
+}
+
 function applySleep(span) {
+  timer.sleeping = false;                         // 補正が届いた/届かないと分かった時点で解除
   const c = timer.current;
   if (timer.status !== 'running' || !c) return;   // 一時停止・アイドル中は残り時間が凍結済み
   const { suspendAt, resumeAt } = span || {};
   if (!Number.isFinite(suspendAt) || !Number.isFinite(resumeAt) || resumeAt <= suspendAt) return;
 
+  // 眠る前に既に予定終了を過ぎていたなら、そのまま完了させる(先延ばしにしない)
+  const overdue = suspendAt >= timer.endAt;
   // 眠りに落ちた時刻で区間を閉じる。予定終了より後に眠ったなら実働は endAt 止まり。
   if (c.intStartAt) {
     const endMs = Math.min(suspendAt, timer.endAt);
@@ -295,11 +306,12 @@ function applySleep(span) {
         endedAt: new Date(endMs).toISOString()
       });
     }
-    // 区間ごと睡眠に飲まれていた場合(endMs <= intStartAt)は実働ゼロなので積まない
-    c.intStartAt = resumeAt;
+    // 区間ごと睡眠に飲まれていた場合(endMs <= intStartAt)は実働ゼロなので積まない。
+    // 既に予定終了を過ぎているなら開き直さない(復帰時刻の0長区間が記録の
+    // endedAt になり、終了時刻が数時間ずれてしまう)。
+    c.intStartAt = overdue ? null : resumeAt;
   }
-  // 眠る前に既に予定終了を過ぎていたなら、そのまま完了させる(先延ばしにしない)
-  if (suspendAt < timer.endAt) timer.endAt += resumeAt - suspendAt;
+  if (!overdue) timer.endAt += resumeAt - suspendAt;
   renderTimer();
 }
 
@@ -467,6 +479,9 @@ function renderTodayCount() {
 }
 
 function startPauseResume() {
+  // 手動操作が来たということは目が覚めている。復帰通知を取り逃してタイマーが
+  // 止まったままになった場合の逃げ道(通常は applySleep が解除する)。
+  timer.sleeping = false;
   if (timer.status === 'idle') {
     timer.totalMs = modeDurationMs(timer.mode);
     timer.endAt = Date.now() + timer.totalMs;
@@ -500,6 +515,8 @@ function startPauseResume() {
 }
 
 function tick() {
+  // スリープ中(と復帰直後の補正待ち)は壁時計が飛んでいるので完了判定に使えない
+  if (timer.sleeping) return;
   if (Date.now() >= timer.endAt) {
     finishSession(true);
     return;

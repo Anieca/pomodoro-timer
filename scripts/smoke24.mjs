@@ -15,6 +15,7 @@ import * as os from 'node:os';
 //  U) タスク別の時間(segments)にも睡眠が入らない
 //  V) 眠る前に既に予定終了を過ぎていたなら先延ばしにしない
 //  W) 一時停止中・アイドル中の復帰では何もしない
+//  X) 復帰直後の tick が補正を追い越してセッションを完了させない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
@@ -114,14 +115,26 @@ let tGot;                                   // U でも同じセッションの�
     timer.endAt = now - 10 * 60 * 1000;
     const before = timer.endAt;
     applySleep({ suspendAt: now, resumeAt: now + H });
-    return { shifted: timer.endAt - before, lastIv: timer.current.intervals.at(-1) };
+    return {
+      shifted: timer.endAt - before,
+      lastIv: timer.current.intervals.at(-1),
+      intStartAt: timer.current.intStartAt,
+      endAt: timer.endAt
+    };
   }, H3);
   console.log('V:', JSON.stringify(got));
   assert(got.shifted === 0, 'V: 眠る前に終わっていたセッションは先延ばしにしない');
   const ivMin = (new Date(got.lastIv.endedAt) - new Date(got.lastIv.startedAt)) / 60000;
   assert(Math.abs(ivMin - 25) < 0.1, 'V: 実働は予定終了まで(25分)で止まる');
+  // 開き直すと復帰時刻の0長区間ができ、記録の終了時刻が数時間ずれる
+  assert(got.intStartAt === null, 'V: 終わっていたセッションの区間は開き直さない');
   await page.evaluate(() => stopEarly());
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(400);
+  const saved = await page.evaluate(() => window.api.loadData());
+  const last = (saved.sessions || []).at(-1);
+  console.log('V: saved endedAt=', last && last.endedAt, 'intervals=', last && last.intervals.length);
+  assert(last && new Date(last.endedAt).getTime() <= got.endAt + 1000, 'V: 記録の終了時刻は予定終了まで(復帰時刻ではない)');
+  assert(last && last.intervals.length === 1, 'V: 0長の区間を足さない(一時停止回数が増えない)');
 }
 
 /* ===== W: 一時停止中・アイドル中は何もしない ===== */
@@ -149,6 +162,39 @@ let tGot;                                   // U でも同じセッションの�
   console.log('W(paused):', JSON.stringify(paused));
   assert(paused.status === 'paused', 'W: 一時停止中のまま');
   assert(paused.sameEnd && paused.sameRemain && paused.sameIvs, 'W: 一時停止中は残り時間が凍結済みなので触らない');
+}
+
+/* ===== X: 復帰直後の tick が補正を追い越さない ===== */
+{
+  // 復帰時、tick(250ms)は power:resume より先に走りうる。そこで予定終了の超過を
+  // 検知されると補正が届く前に完了扱いになり、この PR が直そうとしている
+  // 「眠っていた分を丸ごと実働に計上する」挙動がそのまま残ってしまう。
+  await page.evaluate(() => {
+    // 自動開始が W 以降の状態に混ざらないよう切っておく
+    data.settings.autoStartBreak = false;
+    data.settings.autoStartWork = false;
+    if (timer.status !== 'idle') stopEarly();
+    timer.mode = 'work';
+    startPauseResume();
+    timer.endAt = Date.now() + 60 * 1000;         // まだ1分残っている状態で眠る
+  });
+  await app.evaluate(({ powerMonitor }) => { powerMonitor.emit('suspend'); });
+  await page.waitForTimeout(300);
+  assert(await page.evaluate(() => timer.sleeping), 'X: 眠る前に完了判定を止める');
+
+  // 眠っている間に予定終了を過ぎた状態(復帰時の壁時計の飛びに相当)を作る
+  await page.evaluate(() => { timer.endAt = Date.now() - 1000; });
+  await page.waitForTimeout(600);                 // tick 2回ぶん
+  const during = await page.evaluate(() => ({ status: timer.status, hasCurrent: !!timer.current }));
+  console.log('X(before resume):', JSON.stringify(during));
+  assert(during.status === 'running' && during.hasCurrent, 'X: 補正が届く前の tick は完了させない');
+
+  await app.evaluate(({ powerMonitor }) => { powerMonitor.emit('resume'); });
+  await page.waitForTimeout(600);
+  const after = await page.evaluate(() => ({ status: timer.status, sleeping: timer.sleeping }));
+  console.log('X(after resume):', JSON.stringify(after));
+  assert(after.sleeping === false, 'X: 補正の到着で完了判定を再開する');
+  assert(after.status === 'idle', 'X: 再開後の tick で予定どおり完了する');
 }
 
 /* ===== 不正な span で壊れない ===== */

@@ -269,16 +269,26 @@ function applyState(raw) {
 let suspendedAt = null;
 
 function watchPower() {
-  powerMonitor.on('suspend', () => { suspendedAt = Date.now(); });
+  const toMain = (ch, payload) => {
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(ch, payload);
+  };
+  powerMonitor.on('suspend', () => {
+    suspendedAt = Date.now();
+    // 眠る前にレンダラへ知らせておくのが肝。復帰直後は tick(250ms)が power:resume
+    // より先に走りうるので、そこで予定終了の超過を検知されると補正が届く前に
+    // セッションが完了扱いになる。眠る前に旗を立てておけば到着順に依存せず、
+    // 復帰後の tick は必ず補正を待つ。
+    toMain('power:suspend');
+  });
   powerMonitor.on('resume', () => {
     const suspendAt = suspendedAt;
     suspendedAt = null;
-    // suspend を観測できていない、または時計が巻き戻った場合は何も補正しない
-    // (誤った補正は実働の捏造になるので、分からないときは触らない)。
+    // suspend を観測できていない復帰では睡眠時間が分からない。誤った補正は実働の
+    // 捏造になるので、分からないときは触らない(旗も立っていないので送らない)。
     if (suspendAt === null) return;
     const resumeAt = Date.now();
-    if (!(resumeAt > suspendAt)) return;
-    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('power:resume', { suspendAt, resumeAt });
+    // 時計が巻き戻ったときは補正できないが、旗を下ろすために通知自体は送る。
+    toMain('power:resume', resumeAt > suspendAt ? { suspendAt, resumeAt } : null);
   });
 }
 

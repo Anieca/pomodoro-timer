@@ -276,18 +276,28 @@ function closeInterval() {
   c.intStartAt = null;
 }
 
+// tick の間隔(250ms)がこれ以上飛んだら、プロセスごと止まっていた(= 実働ではない)と
+// みなす。GC や重い描画で数秒詰まることはありうるので、それと確実に区別できる長さにする。
+// スリープは通常もっと長く、これより短い眠りは通知を取り逃しても実害が小さい
+// (従来どおり endAt でクリップされる)。
+const TICK_GAP_MS = 60 * 1000;
+
 // 眠りに落ちる直前(main が powerMonitor の suspend で知らせてくる)。復帰後の tick が
 // 補正より先に走って「予定終了を過ぎた」と判定するのを防ぐため、完了判定を止めておく。
 function beginSleep() {
   timer.sleeping = true;
 }
 
-// スリープ中に操作が来た場合(復帰の通知より先にユーザーが押した、あるいは通知を
-// 取り逃した)の逃げ道。最後に tick が走った時刻を眠りに落ちた時刻とみなして先に
-// 補正する。tick は 250ms 間隔なので誤差はその範囲に収まる。
+// 補正が届く前に操作が来た場合の逃げ道。最後に tick が走った時刻を眠りに落ちた時刻と
+// みなして先に補正する(tick は 250ms 間隔なので誤差はその範囲に収まる)。
+// suspend の通知ごと取り逃していることもあるので、旗が立っていなくても tick が大きく
+// 飛んでいれば止まっていたと分かる。
 function wakeIfSleeping() {
-  if (timer.sleeping) applySleep({ suspendAt: timer.lastTickAt, resumeAt: Date.now() });
+  if (timer.sleeping || Date.now() - timer.lastTickAt > TICK_GAP_MS) {
+    applySleep({ suspendAt: timer.lastTickAt, resumeAt: Date.now() });
+  }
   timer.sleeping = false;                         // lastTickAt が無くても止まったままにしない
+  timer.lastTickAt = Date.now();
 }
 
 // システムスリープからの復帰。眠っていた間は作業していないので、実働区間を
@@ -532,10 +542,6 @@ function startPauseResume() {
   renderFocusTask();
   updateNoise();
 }
-
-// tick の間隔(250ms)がこれ以上飛んだら、プロセスごと止まっていたとみなす。
-// 通常のスケジューリングの揺れとは桁が違うので誤検知しない。
-const TICK_GAP_MS = 5000;
 
 function tick() {
   // スリープ中(と復帰直後の補正待ち)は壁時計が飛んでいるので完了判定に使えない

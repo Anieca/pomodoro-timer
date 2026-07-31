@@ -21,6 +21,7 @@ import * as os from 'node:os';
 //  AA) 復帰通知より先にタスクを切り替えても睡眠が前のタスクに付かない
 //  AB) suspend の通知ごと取り逃しても、tick の飛びから自力で補正する
 //  AC) 終了時の記録(beforeunload)でも睡眠を実働にしない
+//  AD) 通知を取り逃したまま tick より先に停止されても補正する
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
@@ -330,6 +331,27 @@ let tGot;                                   // U でも同じセッションの�
   console.log('AC: durationSec=', got);
   assert(Math.abs(got - 300) < 10, 'AC: 終了時に記録される実働も5分(3時間の睡眠を含まない)');
   await page.waitForTimeout(300);
+}
+
+/* ===== AD: 通知を取り逃したまま tick より先に停止されても補正する ===== */
+{
+  // suspend の通知を取り逃し(旗が立たず)、復帰後の最初の tick より先にユーザーが
+  // 停止した場合。旗に頼れないので、tick が飛んでいること自体を根拠に補正する。
+  const got = await page.evaluate(H => {
+    const now = Date.now();
+    if (timer.status !== 'idle') stopEarly();
+    timer.mode = 'work';
+    startPauseResume();
+    timer.totalMs = 25 * 60 * 1000;
+    timer.current.startedAt = new Date(now - H - 5 * 60 * 1000).toISOString();
+    timer.current.intStartAt = now - H - 5 * 60 * 1000;
+    timer.endAt = now - H + 20 * 60 * 1000;
+    timer.lastTickAt = now - H;
+    stopEarly();                                // 同期実行なので tick は挟まらない
+    return data.sessions.at(-1).durationSec;
+  }, H3);
+  console.log('AD: durationSec=', got);
+  assert(Math.abs(got - 300) < 10, 'AD: 通知が無くても実働は5分(3時間の停止を含まない)');
 }
 
 /* ===== 不正な span で壊れない ===== */

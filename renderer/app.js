@@ -294,23 +294,25 @@ function applySleep(span) {
   if (timer.status !== 'running' || !c) return;   // 一時停止・アイドル中は残り時間が凍結済み
   const { suspendAt, resumeAt } = span || {};
   if (!Number.isFinite(suspendAt) || !Number.isFinite(resumeAt) || resumeAt <= suspendAt) return;
+  // 補正してよいのは眠る前から動き続けていた実働区間だけ。復帰後に自動開始や手動操作で
+  // 始まった/再開されたものへ睡眠分を足すと、25分のタイマーが3時間25分になってしまう
+  // (開始・再開の時点で endAt は引き直されているので、そもそも補正は要らない)。
+  if (!c.intStartAt || c.intStartAt > suspendAt) return;
 
   // 眠る前に既に予定終了を過ぎていたなら、そのまま完了させる(先延ばしにしない)
   const overdue = suspendAt >= timer.endAt;
   // 眠りに落ちた時刻で区間を閉じる。予定終了より後に眠ったなら実働は endAt 止まり。
-  if (c.intStartAt) {
-    const endMs = Math.min(suspendAt, timer.endAt);
-    if (endMs > c.intStartAt) {
-      c.intervals.push({
-        startedAt: new Date(c.intStartAt).toISOString(),
-        endedAt: new Date(endMs).toISOString()
-      });
-    }
-    // 区間ごと睡眠に飲まれていた場合(endMs <= intStartAt)は実働ゼロなので積まない。
-    // 既に予定終了を過ぎているなら開き直さない(復帰時刻の0長区間が記録の
-    // endedAt になり、終了時刻が数時間ずれてしまう)。
-    c.intStartAt = overdue ? null : resumeAt;
+  const endMs = Math.min(suspendAt, timer.endAt);
+  if (endMs > c.intStartAt) {
+    c.intervals.push({
+      startedAt: new Date(c.intStartAt).toISOString(),
+      endedAt: new Date(endMs).toISOString()
+    });
   }
+  // 区間ごと睡眠に飲まれていた場合(endMs <= intStartAt)は実働ゼロなので積まない。
+  // 既に予定終了を過ぎているなら開き直さない(復帰時刻の0長区間が記録の endedAt に
+  // なり、終了時刻が数時間ずれてしまう)。
+  c.intStartAt = overdue ? null : resumeAt;
   if (!overdue) timer.endAt += resumeAt - suspendAt;
   renderTimer();
 }

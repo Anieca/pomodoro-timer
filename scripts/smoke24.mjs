@@ -16,6 +16,7 @@ import * as os from 'node:os';
 //  V) 眠る前に既に予定終了を過ぎていたなら先延ばしにしない
 //  W) 一時停止中・アイドル中の復帰では何もしない
 //  X) 復帰直後の tick が補正を追い越してセッションを完了させない
+//  Y) 復帰後に始まったセッションには補正を適用しない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
@@ -195,6 +196,25 @@ let tGot;                                   // U でも同じセッションの�
   console.log('X(after resume):', JSON.stringify(after));
   assert(after.sleeping === false, 'X: 補正の到着で完了判定を再開する');
   assert(after.status === 'idle', 'X: 再開後の tick で予定どおり完了する');
+}
+
+/* ===== Y: 復帰後に始まったセッションには補正を適用しない ===== */
+{
+  // 自動開始や素早い手動操作は、キューに残った power:resume の処理より先に走りうる。
+  // そこへ睡眠分を足すと、25分のタイマーが3時間25分になってしまう。
+  const got = await page.evaluate(H => {
+    const now = Date.now();
+    if (timer.status !== 'idle') stopEarly();
+    startPauseResume();                       // 目が覚めてから始めたセッション
+    const before = timer.endAt;
+    applySleep({ suspendAt: now - H, resumeAt: now });   // 眠っていたのは別のセッション
+    return { shifted: timer.endAt - before, ivs: timer.current.intervals.length };
+  }, H3);
+  console.log('Y:', JSON.stringify(got));
+  assert(got.shifted === 0, 'Y: 復帰後に始まったタイマーは延長しない');
+  assert(got.ivs === 0, 'Y: 復帰後に始まったタイマーに区間を足さない');
+  await page.evaluate(() => stopEarly());
+  await page.waitForTimeout(300);
 }
 
 /* ===== 不正な span で壊れない ===== */

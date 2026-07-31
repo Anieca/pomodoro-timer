@@ -19,6 +19,8 @@ import * as os from 'node:os';
 //  Y) 復帰後に始まったセッションには補正を適用しない
 //  Z) 復帰通知より先に停止されても睡眠は記録に残さない
 //  AA) 復帰通知より先にタスクを切り替えても睡眠が前のタスクに付かない
+//  AB) suspend の通知ごと取り逃しても、tick の飛びから自力で補正する
+//  AC) 終了時の記録(beforeunload)でも睡眠を実働にしない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
@@ -275,6 +277,58 @@ let tGot;                                   // U でも同じセッションの�
   assert(got.segs.length === 1 && got.firstIsA, 'AA: 切り替え時に直前のタスクの区間を確定する');
   assert(got.segs[0] === 5, 'AA: 前のタスクに付くのは5分(3時間の睡眠を含まない)');
   await page.evaluate(() => stopEarly());
+  await page.waitForTimeout(300);
+}
+
+/* ===== AB: 通知を取り逃しても tick の飛びから自力で補正する ===== */
+{
+  // power:suspend を処理し切る前に凍結されると、復帰後の tick が補正より先に走る。
+  // 旗が立っていないので完了判定に進み、25分ぶんを実働として記録してしまう。
+  await page.evaluate(H => {
+    const now = Date.now();
+    if (timer.status !== 'idle') stopEarly();
+    timer.mode = 'work';
+    startPauseResume();
+    timer.totalMs = 25 * 60 * 1000;
+    timer.current.startedAt = new Date(now - H - 5 * 60 * 1000).toISOString();
+    timer.current.intStartAt = now - H - 5 * 60 * 1000;
+    timer.endAt = now - H + 20 * 60 * 1000;     // 予定終了は3時間近く前(復帰時の状態)
+    timer.lastTickAt = now - H;                 // 最後の tick は3時間前 = その間止まっていた
+    // beginSleep() は呼ばない(suspend の通知を取り逃した想定)
+  }, H3);
+  await page.waitForTimeout(600);               // tick を数回走らせる
+  const st = await page.evaluate(() => ({ status: timer.status, remainMin: (timer.endAt - Date.now()) / 60000 }));
+  console.log('AB:', JSON.stringify(st));
+  assert(st.status === 'running', 'AB: 飛んだ時間で完了扱いにしない');
+  assert(Math.abs(st.remainMin - 20) < 0.2, 'AB: 残り時間は止まる前のまま(20分)');
+  await page.evaluate(() => stopEarly());
+  await page.waitForTimeout(400);
+  const saved = await page.evaluate(() => window.api.loadData());
+  const last = (saved.sessions || []).at(-1);
+  console.log('AB: saved durationSec=', last && last.durationSec);
+  assert(last && Math.abs(last.durationSec - 300) < 10, 'AB: 記録される実働も5分');
+}
+
+/* ===== AC: 終了時の記録(beforeunload)でも睡眠を実働にしない ===== */
+{
+  const got = await page.evaluate(H => {
+    const now = Date.now();
+    if (timer.status !== 'idle') stopEarly();
+    timer.mode = 'work';
+    startPauseResume();
+    timer.totalMs = 25 * 60 * 1000;
+    timer.current.startedAt = new Date(now - H - 5 * 60 * 1000).toISOString();
+    timer.current.intStartAt = now - H - 5 * 60 * 1000;
+    timer.endAt = now - H + 20 * 60 * 1000;
+    timer.lastTickAt = now - H;
+    beginSleep();
+    recordSession(false);                       // beforeunload と同じ直接呼び出し
+    const rec = data.sessions.at(-1);
+    stopEarly();
+    return rec.durationSec;
+  }, H3);
+  console.log('AC: durationSec=', got);
+  assert(Math.abs(got - 300) < 10, 'AC: 終了時に記録される実働も5分(3時間の睡眠を含まない)');
   await page.waitForTimeout(300);
 }
 

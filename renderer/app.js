@@ -533,10 +533,20 @@ function startPauseResume() {
   updateNoise();
 }
 
+// tick の間隔(250ms)がこれ以上飛んだら、プロセスごと止まっていたとみなす。
+// 通常のスケジューリングの揺れとは桁が違うので誤検知しない。
+const TICK_GAP_MS = 5000;
+
 function tick() {
   // スリープ中(と復帰直後の補正待ち)は壁時計が飛んでいるので完了判定に使えない
   if (timer.sleeping) return;
-  timer.lastTickAt = Date.now();                  // 眠りに落ちた時刻の代用(wakeIfSleeping)
+  const now = Date.now();
+  const gap = now - timer.lastTickAt;
+  timer.lastTickAt = now;
+  // power:suspend を処理し切る前に凍結された場合、復帰後の tick が補正より先に走る。
+  // 完了判定に進む前に、飛んだぶんを眠っていた区間として自力で補正しておく
+  // (あとから届く power:resume は区間より前の時刻になるので applySleep が捨てる)。
+  if (gap > TICK_GAP_MS) applySleep({ suspendAt: now - gap, resumeAt: now });
   if (Date.now() >= timer.endAt) {
     finishSession(true);
     return;
@@ -565,6 +575,10 @@ function persistFlow() {
 
 // 実行中セッション(フォーカス/休憩)を記録に積む(1分未満の中断は記録しない)
 function recordSession(completed) {
+  // 記録に落とす前に補正を済ませる。beforeunload からは直接呼ばれるため、ここで
+  // 効かせないと closeInterval が睡眠込みの区間を確定してしまい、あとから
+  // applySleep が届いても intStartAt が消えていて直せない。
+  wakeIfSleeping();
   const c = timer.current;
   if (!c) return;
   closeInterval();

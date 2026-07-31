@@ -22,7 +22,8 @@ const timer = {
   intervalId: null,
   cycle: 0,              // 長休憩までの完了ポモドーロ数
   current: null,
-  sleeping: false        // システムスリープ中(復帰の補正が届くまで完了判定を止める)
+  sleeping: false,       // システムスリープ中(復帰の補正が届くまで完了判定を止める)
+  lastTickAt: 0          // 最後に tick が走った時刻(眠りに落ちた時刻の代用)
 };
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -272,6 +273,20 @@ function closeInterval() {
   c.intStartAt = null;
 }
 
+// 眠りに落ちる直前(main が powerMonitor の suspend で知らせてくる)。復帰後の tick が
+// 補正より先に走って「予定終了を過ぎた」と判定するのを防ぐため、完了判定を止めておく。
+function beginSleep() {
+  timer.sleeping = true;
+}
+
+// スリープ中に操作が来た場合(復帰の通知より先にユーザーが押した、あるいは通知を
+// 取り逃した)の逃げ道。最後に tick が走った時刻を眠りに落ちた時刻とみなして先に
+// 補正する。tick は 250ms 間隔なので誤差はその範囲に収まる。
+function wakeIfSleeping() {
+  if (timer.sleeping) applySleep({ suspendAt: timer.lastTickAt, resumeAt: Date.now() });
+  timer.sleeping = false;                         // lastTickAt が無くても止まったままにしない
+}
+
 // システムスリープからの復帰。眠っていた間は作業していないので、実働区間を
 // 眠りに落ちた時刻で閉じ、復帰時刻から開き直す。あわせて眠っていた分だけ予定終了を
 // 後ろへずらす(= スリープを一時停止と同じ扱いにする)。
@@ -282,12 +297,6 @@ function closeInterval() {
 //
 // 補正しない場合、蓋を閉じて3時間後に開けると「25分集中した」ことになってしまう
 // (復帰時の tick が予定終了超過を検知して完了扱いにし、区間は endAt でクリップされる)。
-// 眠りに落ちる直前。復帰後の tick が補正より先に走って「予定終了を過ぎた」と
-// 判定するのを防ぐため、完了判定を止めておく(解除は applySleep か手動操作)。
-function beginSleep() {
-  timer.sleeping = true;
-}
-
 function applySleep(span) {
   timer.sleeping = false;                         // 補正が届いた/届かないと分かった時点で解除
   const c = timer.current;
@@ -481,9 +490,9 @@ function renderTodayCount() {
 }
 
 function startPauseResume() {
-  // 手動操作が来たということは目が覚めている。復帰通知を取り逃してタイマーが
-  // 止まったままになった場合の逃げ道(通常は applySleep が解除する)。
-  timer.sleeping = false;
+  // 手動操作が来たということは目が覚めている。残り時間を眠る前の endAt から計算して
+  // しまう前に補正を済ませる(通常は先に applySleep が届いている)。
+  wakeIfSleeping();
   if (timer.status === 'idle') {
     timer.totalMs = modeDurationMs(timer.mode);
     timer.endAt = Date.now() + timer.totalMs;
@@ -519,6 +528,7 @@ function startPauseResume() {
 function tick() {
   // スリープ中(と復帰直後の補正待ち)は壁時計が飛んでいるので完了判定に使えない
   if (timer.sleeping) return;
+  timer.lastTickAt = Date.now();                  // 眠りに落ちた時刻の代用(wakeIfSleeping)
   if (Date.now() >= timer.endAt) {
     finishSession(true);
     return;
@@ -535,6 +545,7 @@ function tick() {
 
 function stopEarly() {
   if (timer.status === 'idle') return;
+  wakeIfSleeping();                               // 睡眠を実働として記録に残さない
   finishSession(false);
 }
 
@@ -615,6 +626,7 @@ function finishSession(completed) {
 // 休憩を飛ばしてフォーカスに戻る
 function skipBreak() {
   if (timer.mode === 'work') return;
+  wakeIfSleeping();                               // 睡眠を休憩の実時間として記録に残さない
   clearInterval(timer.intervalId);
   // スキップ時点までの休憩は実時間として記録(1分未満は破棄)
   if (timer.current) recordSession(false);

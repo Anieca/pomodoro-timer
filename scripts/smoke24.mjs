@@ -17,6 +17,7 @@ import * as os from 'node:os';
 //  W) 一時停止中・アイドル中の復帰では何もしない
 //  X) 復帰直後の tick が補正を追い越してセッションを完了させない
 //  Y) 復帰後に始まったセッションには補正を適用しない
+//  Z) 復帰通知より先に停止されても睡眠は記録に残さない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
@@ -215,6 +216,33 @@ let tGot;                                   // U でも同じセッションの�
   assert(got.ivs === 0, 'Y: 復帰後に始まったタイマーに区間を足さない');
   await page.evaluate(() => stopEarly());
   await page.waitForTimeout(300);
+}
+
+/* ===== Z: 復帰通知より先に停止されても睡眠は記録に残さない ===== */
+{
+  // 目が覚めた直後、キューの power:resume が処理される前にユーザーが停止を押すと、
+  // 補正が届く頃には timer.current が消えていて睡眠が実働として残ってしまう。
+  // 操作側でも最後の tick 時刻を眠りに落ちた時刻とみなして先に補正する。
+  await page.evaluate(H => {
+    const now = Date.now();
+    if (timer.status !== 'idle') stopEarly();
+    timer.mode = 'work';
+    startPauseResume();
+    timer.totalMs = 25 * 60 * 1000;
+    // 3時間前に眠り、その5分前から動いていたセッション
+    timer.current.startedAt = new Date(now - H - 5 * 60 * 1000).toISOString();
+    timer.current.intStartAt = now - H - 5 * 60 * 1000;
+    timer.endAt = now - H + 20 * 60 * 1000;
+    timer.lastTickAt = now - H;                 // 最後に tick が走ったのは眠る直前
+    beginSleep();
+    stopEarly();                                // 復帰通知より先にユーザーが停止した
+  }, H3);
+  await page.waitForTimeout(400);
+  const saved = await page.evaluate(() => window.api.loadData());
+  const last = (saved.sessions || []).at(-1);
+  console.log('Z: saved durationSec=', last && last.durationSec);
+  assert(last && Math.abs(last.durationSec - 300) < 10, 'Z: 停止が先でも実働は5分(3時間の睡眠を含まない)');
+  assert(await page.evaluate(() => timer.sleeping === false), 'Z: 停止後にスリープ状態が残らない');
 }
 
 /* ===== 不正な span で壊れない ===== */

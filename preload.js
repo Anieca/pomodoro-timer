@@ -1,13 +1,21 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
+  // 読み込みが返るまでの仮表示に使う既定値。スキーマと二重管理にしないため main から取る。
+  // レンダラはサンドボックス下で preload から shared/ を require できないので IPC で渡す。
+  // ウィンドウ描画前の preload 実行時に一度だけなので同期で構わない。
+  defaultSettings: ipcRenderer.sendSync('data:defaults'),
   loadData: () => ipcRenderer.invoke('data:load'),
   saveData: data => ipcRenderer.invoke('data:save', data),
   // 終了時にレンダラ破棄前の書き込み完了を保証するための同期保存(beforeunload 用)。
   saveDataSync: data => ipcRenderer.sendSync('data:save-sync', data),
   // 読み込み時の警告(破損退避/回復/権限エラー)を一度だけ回収する。
   consumeLoadWarning: () => ipcRenderer.invoke('data:consume-warning'),
-  exportData: (format, data) => ipcRenderer.invoke('data:export', { format, data }),
+  // main → レンダラ:正本が変わったときのスナップショット。自分の保存も返ってくる
+  // ので、main の正規化で直された値がそのまま画面に反映される。
+  onDataSnapshot: cb => ipcRenderer.on('data:snapshot', (_e, snapshot) => cb(snapshot)),
+  // 書き出す内容は main が持つ正本なので、レンダラからデータは渡さない。
+  exportData: format => ipcRenderer.invoke('data:export', { format }),
   listSounds: () => ipcRenderer.invoke('sounds:list'),
   readSound: name => ipcRenderer.invoke('sounds:read', name),
   openSoundsDir: () => ipcRenderer.invoke('sounds:openDir'),

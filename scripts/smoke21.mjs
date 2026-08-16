@@ -74,7 +74,9 @@ if (typeof process.getuid === 'function' && process.getuid() === 0) {
 
   const { app, page } = await launch(ud);
   const before = await page.evaluate(() => document.querySelectorAll('#taskList .task-item').length);
-  const warn = await toastText(page);
+  // 起動時の警告は init の IPC 往復のあとに出る。固定待ちでは遅いマシンで取りこぼすため、
+  // 出るまで待つ(出ないまま時間切れになったら、そのときの中身でアサートを落とす)。
+  const warn = await waitToast(page, /読み込めませんでした/).catch(() => toastText(page));
   assert(before === 0, 'D: 読めない原本では空起動');
   assert(!warn.hidden && /読み込めませんでした/.test(warn.text), 'D: 読み込み失敗を起動時に警告');
   assert(preserved(ud).length === 0, 'D: 読み込み時点では退避しない(保存要求まで保留)');

@@ -21,7 +21,9 @@ const timer = {
   remainMs: 0,
   intervalId: null,
   cycle: 0,              // 長休憩までの完了ポモドーロ数
-  current: null
+  current: null,
+  sleeping: false,       // システムスリープ中(復帰の補正が届くまで完了判定を止める)
+  lastTickAt: 0          // 最後に tick が走った時刻(眠りに落ちた時刻の代用)
 };
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -64,6 +66,10 @@ async function init() {
     else if (cmd === 'skip') { if (timer.mode !== 'work' && timer.status !== 'idle') skipBreak(); }
     else if (cmd === 'stop') stopEarly();
   });
+  // スリープ前後の通知。取りこぼすと睡眠時間が実働として記録に残るため、
+  // タイマー操作と同じく await より前に登録する。
+  window.api.onPowerSuspend(beginSleep);
+  window.api.onPowerResume(applySleep);
 
   // 保存中に main の正規化で値が直された場合、そのスナップショットが返ってくる。
   // 受け取ったものを正本として描き直すので、画面と保存内容が食い違わない。
@@ -251,6 +257,9 @@ function pomoElapsedMs() {
 // 実働区間を開く/閉じる(一時停止・再開・終了の境界で壁時計の絶対時刻を記録)
 function openInterval() {
   if (timer.current) timer.current.intStartAt = Date.now();
+  // 最初の tick(250ms 後)より前に眠った場合の代用値。前の区間の値が残っていると
+  // wakeIfSleeping が「区間より前」の時刻を渡してしまい、補正が捨てられる。
+  timer.lastTickAt = Date.now();
 }
 function closeInterval() {
   const c = timer.current;
@@ -267,8 +276,75 @@ function closeInterval() {
   c.intStartAt = null;
 }
 
+// tick の間隔(250ms)がこれ以上飛んだら、プロセスごと止まっていた(= 実働ではない)と
+// みなす。GC や重い描画で数秒詰まることはありうるので、それと確実に区別できる長さにする。
+// スリープは通常もっと長く、これより短い眠りは通知を取り逃しても実害が小さい
+// (従来どおり endAt でクリップされる)。
+const TICK_GAP_MS = 60 * 1000;
+
+// 眠りに落ちる直前(main が powerMonitor の suspend で知らせてくる)。復帰後の tick が
+// 補正より先に走って「予定終了を過ぎた」と判定するのを防ぐため、完了判定を止めておく。
+function beginSleep() {
+  timer.sleeping = true;
+}
+
+// 補正が届く前に操作が来た場合の逃げ道。最後に tick が走った時刻を眠りに落ちた時刻と
+// みなして先に補正する(tick は 250ms 間隔なので誤差はその範囲に収まる)。
+// suspend の通知ごと取り逃していることもあるので、旗が立っていなくても tick が大きく
+// 飛んでいれば止まっていたと分かる。
+function wakeIfSleeping() {
+  if (timer.sleeping || Date.now() - timer.lastTickAt > TICK_GAP_MS) {
+    applySleep({ suspendAt: timer.lastTickAt, resumeAt: Date.now() });
+  }
+  timer.sleeping = false;                         // lastTickAt が無くても止まったままにしない
+  timer.lastTickAt = Date.now();
+}
+
+// システムスリープからの復帰。眠っていた間は作業していないので、実働区間を
+// 眠りに落ちた時刻で閉じ、復帰時刻から開き直す。あわせて眠っていた分だけ予定終了を
+// 後ろへずらす(= スリープを一時停止と同じ扱いにする)。
+//
+// ずらすのは残り時間を保つためだけではない。タスク別の時間(segments)は
+// pomoElapsedMs() = totalMs -(endAt - now)から出るので、endAt を睡眠分ずらすと
+// 復帰直後の経過時間が眠りに落ちた時点と一致し、セグメント側も自動的に睡眠を含まない。
+//
+// 補正しない場合、蓋を閉じて3時間後に開けると「25分集中した」ことになってしまう
+// (復帰時の tick が予定終了超過を検知して完了扱いにし、区間は endAt でクリップされる)。
+function applySleep(span) {
+  timer.sleeping = false;                         // 補正が届いた/届かないと分かった時点で解除
+  const c = timer.current;
+  if (timer.status !== 'running' || !c) return;   // 一時停止・アイドル中は残り時間が凍結済み
+  const { suspendAt, resumeAt } = span || {};
+  if (!Number.isFinite(suspendAt) || !Number.isFinite(resumeAt) || resumeAt <= suspendAt) return;
+  // 補正してよいのは眠る前から動き続けていた実働区間だけ。復帰後に自動開始や手動操作で
+  // 始まった/再開されたものへ睡眠分を足すと、25分のタイマーが3時間25分になってしまう
+  // (開始・再開の時点で endAt は引き直されているので、そもそも補正は要らない)。
+  if (!c.intStartAt || c.intStartAt > suspendAt) return;
+
+  // 眠る前に既に予定終了を過ぎていたなら、そのまま完了させる(先延ばしにしない)
+  const overdue = suspendAt >= timer.endAt;
+  // 眠りに落ちた時刻で区間を閉じる。予定終了より後に眠ったなら実働は endAt 止まり。
+  const endMs = Math.min(suspendAt, timer.endAt);
+  if (endMs > c.intStartAt) {
+    c.intervals.push({
+      startedAt: new Date(c.intStartAt).toISOString(),
+      endedAt: new Date(endMs).toISOString()
+    });
+  }
+  // 区間ごと睡眠に飲まれていた場合(endMs <= intStartAt)は実働ゼロなので積まない。
+  // 既に予定終了を過ぎているなら開き直さない(復帰時刻の0長区間が記録の endedAt に
+  // なり、終了時刻が数時間ずれてしまう)。
+  c.intStartAt = overdue ? null : resumeAt;
+  if (!overdue) timer.endAt += resumeAt - suspendAt;
+  renderTimer();
+}
+
 // 現在のセグメントを確定して segments に積む
 function closeSegment() {
+  // セグメントは経過時間(= endAt 基準)から出るので、睡眠分を endAt へ反映する前に
+  // 区切ると残り時間まるごとが直前のタスクに付いてしまう。あとから applySleep が
+  // 届いても確定済みの segments は直せないため、ここで先に補正しておく。
+  wakeIfSleeping();
   const c = timer.current;
   if (!c) return;
   const durMs = pomoElapsedMs() - c.segStartMs;
@@ -431,6 +507,9 @@ function renderTodayCount() {
 }
 
 function startPauseResume() {
+  // 手動操作が来たということは目が覚めている。残り時間を眠る前の endAt から計算して
+  // しまう前に補正を済ませる(通常は先に applySleep が届いている)。
+  wakeIfSleeping();
   if (timer.status === 'idle') {
     timer.totalMs = modeDurationMs(timer.mode);
     timer.endAt = Date.now() + timer.totalMs;
@@ -445,6 +524,7 @@ function startPauseResume() {
       segTaskId: timer.mode === 'work' ? (data.selectedTaskId || null) : null,
       segStartMs: 0
     };
+    timer.lastTickAt = Date.now();
     timer.intervalId = setInterval(tick, 250);
   } else if (timer.status === 'running') {
     timer.remainMs = Math.max(0, timer.endAt - Date.now());
@@ -464,6 +544,15 @@ function startPauseResume() {
 }
 
 function tick() {
+  // スリープ中(と復帰直後の補正待ち)は壁時計が飛んでいるので完了判定に使えない
+  if (timer.sleeping) return;
+  const now = Date.now();
+  const gap = now - timer.lastTickAt;
+  timer.lastTickAt = now;
+  // power:suspend を処理し切る前に凍結された場合、復帰後の tick が補正より先に走る。
+  // 完了判定に進む前に、飛んだぶんを眠っていた区間として自力で補正しておく
+  // (あとから届く power:resume は区間より前の時刻になるので applySleep が捨てる)。
+  if (gap > TICK_GAP_MS) applySleep({ suspendAt: now - gap, resumeAt: now });
   if (Date.now() >= timer.endAt) {
     finishSession(true);
     return;
@@ -480,6 +569,7 @@ function tick() {
 
 function stopEarly() {
   if (timer.status === 'idle') return;
+  wakeIfSleeping();                               // 睡眠を実働として記録に残さない
   finishSession(false);
 }
 
@@ -491,6 +581,10 @@ function persistFlow() {
 
 // 実行中セッション(フォーカス/休憩)を記録に積む(1分未満の中断は記録しない)
 function recordSession(completed) {
+  // 記録に落とす前に補正を済ませる。beforeunload からは直接呼ばれるため、ここで
+  // 効かせないと closeInterval が睡眠込みの区間を確定してしまい、あとから
+  // applySleep が届いても intStartAt が消えていて直せない。
+  wakeIfSleeping();
   const c = timer.current;
   if (!c) return;
   closeInterval();
@@ -560,6 +654,7 @@ function finishSession(completed) {
 // 休憩を飛ばしてフォーカスに戻る
 function skipBreak() {
   if (timer.mode === 'work') return;
+  wakeIfSleeping();                               // 睡眠を休憩の実時間として記録に残さない
   clearInterval(timer.intervalId);
   // スキップ時点までの休憩は実時間として記録(1分未満は破棄)
   if (timer.current) recordSession(false);

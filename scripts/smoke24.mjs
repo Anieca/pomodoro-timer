@@ -116,7 +116,10 @@ let tGot;                                   // U でも同じセッションの�
     const now = Date.now();
     startPauseResume();
     timer.totalMs = 25 * 60 * 1000;
-    // 予定終了は既に10分前。その後で眠った(復帰時にそのまま完了させたい)
+    // 予定終了は既に10分前。その後で眠った(復帰時にそのまま完了させたい)。
+    // startedAt も揃えておく。ずらしたままだと開始より前に終わる記録になり、
+    // main の正規化(normalizeSession)が正しく端点を引き直してしまう。
+    timer.current.startedAt = new Date(now - 35 * 60 * 1000).toISOString();
     timer.current.intStartAt = now - 35 * 60 * 1000;
     timer.endAt = now - 10 * 60 * 1000;
     const before = timer.endAt;

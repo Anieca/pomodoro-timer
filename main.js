@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, pow
 const path = require('path');
 const fs = require('fs');
 const { normalizeData, DEFAULT_SETTINGS } = require('./shared/schema');
+const { applyAction } = require('./shared/actions');
 
 if (process.env.POMODORO_USER_DATA) app.setPath('userData', process.env.POMODORO_USER_DATA);
 
@@ -356,11 +357,9 @@ let store = normalizeData(null);
 
 // 正本を差し替えて、書き込み元以外の全ウィンドウへ配る。引数は正規化済みであること。
 //
-// 書き込み元へ送り返さないのは、丸ごと置換の保存 API では取りこぼしが起きるため。
-// 保存1の応答が届くまでに編集2が入っていると、返ってきた古いスナップショットで
-// 上書きされて編集2が画面から消え、その状態で次の保存が走れば本当に失われる。
-// 書き込み元は自分が送った内容を既に持っているので、送り返す必要もない。
-// (main 自身が書き手になる段階では、丸ごと置換をやめて intent 化する必要がある)
+// 書き込み元を外すのは二重配信を避けるためだけ。意図(data:mutate)の応答として
+// 同じスナップショットが戻り値で届くので、そちらが書き込み元の反映経路になる。
+// 丸ごと置換だった頃と違い、書き込み元も必ず正規化後の正本を受け取る。
 function publish(normalized, exceptWc) {
   store = normalized;
   for (const win of BrowserWindow.getAllWindows()) {
@@ -452,7 +451,7 @@ function gateWrite() {
     backup = null;              // 既に消えている場合は保全すべき原本がない
   }
   unreadableOriginal = null;    // 以降は通常の保存に戻る
-  if (backup) console.warn('[data:save] 読めなかった原本を退避しました:', backup);
+  if (backup) console.warn('[data:mutate] 読めなかった原本を退避しました:', backup);
   return backup;
 }
 
@@ -481,23 +480,36 @@ function writeData(raw, senderWc) {
   return preserved;
 }
 
-ipcMain.handle('data:save', (e, data) => {
+// 意図を正本に適用して保存する。書き手はここだけ。
+// 未知の意図は保存を通さない(黙って素通りさせると、届いていないのにレンダラは
+// 適用されたつもりで先へ進み、次の起動で消えている)。
+function commit(action, senderWc) {
+  const next = applyAction(store, action);
+  if (!next) throw new Error('未知の操作です: ' + String((action && action.type) || action));
+  return writeData(next, senderWc);
+}
+
+// 応答には必ず正本を添える。成功なら適用結果、失敗なら適用前の内容が入るので、
+// レンダラはどちらでもそれを描けば画面と保存内容が食い違わない。
+ipcMain.handle('data:mutate', (e, action) => {
   if (!isTrusted(e)) return { ok: false, error: 'untrusted sender' };
   try {
-    const preserved = writeData(data, e.sender);
+    const preserved = commit(action, e.sender);
     // 原本を退避したことは黙らせない(レンダラがトーストで知らせる)。
-    return preserved ? { ok: true, preserved } : { ok: true };
+    return preserved ? { ok: true, snapshot: store, preserved } : { ok: true, snapshot: store };
   } catch (err) {
-    return { ok: false, error: String((err && err.message) || err) };
+    return { ok: false, error: String((err && err.message) || err), snapshot: store };
   }
 });
 
-// 終了直前の同期保存。sendSync でレンダラをブロックし、書き込み完了を保証する。
+// 終了直前の同期の意図。sendSync でレンダラをブロックし、書き込み完了を保証する。
+// 通常の保存は意図ごとに即ディスクへ乗るため、ここを通るのは終了時に実行中
+// セッションを打ち切って記録する一件だけ。
 // 失敗は握りつぶさず、ユーザーが気づけるようネイティブダイアログで通知する。
-ipcMain.on('data:save-sync', (e, data) => {
+ipcMain.on('data:mutate-sync', (e, action) => {
   if (!isTrusted(e)) { e.returnValue = { ok: false, error: 'untrusted sender' }; return; }
   try {
-    const preserved = writeData(data, e.sender);
+    const preserved = commit(action, e.sender);
     // 何も保存せずに終了/リロードした場合、原本を退避するのはこの同期保存が最初になる。
     // 呼び出し元(beforeunload)は戻り値を使えずトーストも出せないため、退避先を伝える
     // 手段がここしかない。黙って移すと次回起動は普通に空で開き、原本を追えなくなる。
@@ -511,11 +523,11 @@ ipcMain.on('data:save-sync', (e, data) => {
         });
       } catch {}
     }
-    e.returnValue = preserved ? { ok: true, preserved } : { ok: true };
+    e.returnValue = preserved ? { ok: true, snapshot: store, preserved } : { ok: true, snapshot: store };
   } catch (err) {
     const msg = String((err && err.message) || err);
     try { dialog.showErrorBox('保存に失敗しました', 'データを保存できませんでした:\n' + msg); } catch {}
-    e.returnValue = { ok: false, error: msg };
+    e.returnValue = { ok: false, error: msg, snapshot: store };
   }
 });
 

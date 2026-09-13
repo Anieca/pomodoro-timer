@@ -56,10 +56,17 @@ npm start
 ```
 main.js            メインプロセス（ウィンドウ生成・IPC・データ保存・エクスポート）
 preload.js         レンダラーへの API 公開（contextBridge）
+shared/            main とテストで共有する純粋モジュール（schema.js / actions.js）
 renderer/          UI（index.html / styles.css / app.js）
 assets/sounds/     ノイズ音源
 scripts/           音源生成・スモークテスト用スクリプト
 ```
+
+保存データの正本を持つのはメインプロセスで、レンダラーは「何をしたいか」（意図）
+だけを送り、返ってきたスナップショットを描画します。意図の適用は `shared/actions.js`、
+検証と正規化は `shared/schema.js` に集約してあり、どちらも Electron に依存しないので
+`npm test` の単体テスト（`scripts/actions-test.mjs` / `scripts/schema-test.mjs`）だけで
+確かめられます。
 
 ## ライセンス
 

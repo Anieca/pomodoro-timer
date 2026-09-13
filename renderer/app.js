@@ -27,16 +27,37 @@ const timer = {
 };
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-// 保存は fire-and-forget だが、失敗(容量不足・権限エラー等)は黙殺せず通知する。
-// main が保存を中止した場合はその理由を、読めなかった原本を退避した場合はその旨を出す。
 const SAVE_FAILED = '保存に失敗しました。ディスクの空き容量や権限を確認してください';
-const save = () => window.api.saveData(data).then(
-  res => {
-    if (res && res.ok === false) toast(res.error ? `保存に失敗しました: ${res.error}` : SAVE_FAILED);
-    else if (res && res.preserved) toast(`読み込めなかった元のデータファイルを ${res.preserved} に退避しました`);
-  },
-  () => toast(SAVE_FAILED)
-);
+
+// 受け取った正本を画面に反映する唯一の経路。data への代入はここだけで起きる。
+function applySnapshot(snapshot) {
+  if (!snapshot) return;
+  data = snapshot;
+  renderAll();
+}
+
+// 応答の共通処理。成功でも失敗でも main が添えてきた正本を描く。失敗時にそれを
+// 捨てて手元を残すと、保存されていない内容が画面に居座り、次の操作でその上に
+// 積み上がってしまう(ディスクの正史と画面が静かにずれる)。
+function settle(res) {
+  if (!res) { toast(SAVE_FAILED); return null; }
+  applySnapshot(res.snapshot);
+  if (res.ok === false) toast(res.error ? `保存に失敗しました: ${res.error}` : SAVE_FAILED);
+  else if (res.preserved) toast(`読み込めなかった元のデータファイルを ${res.preserved} に退避しました`);
+  return res;
+}
+
+// 変更は「何をしたいか」だけ送る。data を直接いじらないので、丸ごと置換だった頃の
+// ように応答待ちの間の編集が古い内容で上書きされることがない。
+// 失敗(容量不足・権限エラー等)は黙殺せず通知する。
+const mutate = action => window.api.mutate(action).then(settle, () => { toast(SAVE_FAILED); return null; });
+
+// フォーカス対象だけは応答を待たずに覚えておく。表示の遅れは往復のぶん(ミリ秒)で
+// 済むが、選んだ直後に開始されると計測の付け先が空のままセッションが始まり、
+// その時間の帰属はあとから直せない。正本が返れば同じ値になり、保存に失敗したときは
+// 正本の値に戻る。
+let pendingTaskId;                  // undefined = 選択の要求は出ていない
+const focusTaskId = () => (pendingTaskId !== undefined ? pendingTaskId : data.selectedTaskId) || null;
 
 const MODE_LABEL = { work: 'フォーカス', short: '小休憩', long: '長休憩' };
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
@@ -71,14 +92,10 @@ async function init() {
   window.api.onPowerSuspend(beginSleep);
   window.api.onPowerResume(applySleep);
 
-  // 保存中に main の正規化で値が直された場合、そのスナップショットが返ってくる。
-  // 受け取ったものを正本として描き直すので、画面と保存内容が食い違わない。
-  // 進行中のタイマー(timer)はレンダラ側の状態なので、ここでは触らない。
-  window.api.onDataSnapshot(snapshot => {
-    if (!snapshot) return;
-    data = snapshot;
-    renderAll();
-  });
+  // 他のウィンドウの変更で正本が動いたときのスナップショット(自分が出した変更は
+  // mutate の戻り値で受け取る)。進行中のタイマー(timer)はレンダラ側の状態なので
+  // ここでは触らない。
+  window.api.onDataSnapshot(applySnapshot);
 
   // 検証は main の責務。ここへ来るのは正規化済みのスナップショットだけ。
   data = await window.api.loadData();
@@ -123,6 +140,9 @@ function taskStats(taskId) {
 }
 
 function renderTasks() {
+  // 名前を編集している間は組み直さない。意図の反映は全体の再描画で来るので、
+  // 守らないと編集中に別の変更(セッションの記録など)が入っただけで入力が消える。
+  if ($('.task-rename')) return;
   const open = data.tasks.filter(t => !t.completed);
   const done = data.tasks.filter(t => t.completed);
   const list = $('#taskList');
@@ -212,23 +232,26 @@ function beginRename(t, titleEl) {
   input.focus();
   input.select();
   let done = false;
+  // 先に入力欄を外してから組み直す(renderTasks は編集中を検出すると何もしない)。
+  const close = () => {
+    input.remove();
+    renderTasks();
+    renderFocusTask();
+  };
   const commit = () => {
     if (done) return;
     done = true;
     const v = input.value.trim();
-    if (v && v !== t.title) {
-      t.title = v;
-      save();
-    }
-    renderTasks();
-    renderFocusTask();
+    // 畳むのは意図の結果を待たない(待つと入力欄が残ったまま一瞬止まる)。
+    if (v && v !== t.title) mutate({ type: 'task/rename', id: t.id, title: v });
+    close();
   };
   input.addEventListener('keydown', e => {
     e.stopPropagation();
     if (e.key === 'Enter') commit();
     else if (e.key === 'Escape') {
       done = true;
-      renderTasks();
+      close();
     }
   });
   input.addEventListener('blur', commit);
@@ -242,9 +265,8 @@ function addTask(title) {
     createdAt: new Date().toISOString(),
     completedAt: null
   };
-  data.tasks.unshift(task);
-  save();
-  renderTasks();
+  // id と作成時刻はここで採番して意図に添える(main の reducer を時計に依存させない)。
+  mutate({ type: 'task/add', task });
   return task;
 }
 
@@ -362,49 +384,40 @@ function switchSegment(taskId) {
 
 // フォーカス対象タスクの選択(アイドル中=次のポモドーロ用、実行中=即時切り替え)
 function selectTask(taskId) {
-  data.selectedTaskId = taskId;
-  switchSegment(taskId);
-  save();
-  renderTasks();
-  renderFocusTask();
+  pendingTaskId = taskId || null;
+  switchSegment(taskId);            // 実行中セッションの内訳はレンダラ側の状態
+  mutate({ type: 'task/select', id: taskId }).then(() => { pendingTaskId = undefined; });
 }
 
 function toggleTaskDone(id) {
   const t = data.tasks.find(t => t.id === id);
   if (!t) return;
-  t.completed = !t.completed;
-  t.completedAt = t.completed ? new Date().toISOString() : null;
+  const completed = !t.completed;
   // 完了したら選択解除(完了までの時間はセグメントとして記録済み)
-  if (t.completed && data.selectedTaskId === id) {
-    data.selectedTaskId = null;
+  if (completed && focusTaskId() === id) {
     switchSegment(null);
     toast(`「${t.title}」を完了しました 🎉`);
   }
-  save();
-  renderTasks();
-  renderFocusTask();
+  mutate({ type: 'task/setDone', id, completed, at: completed ? new Date().toISOString() : null });
 }
 
 function deleteTask(id) {
   const idx = data.tasks.findIndex(t => t.id === id);
   if (idx === -1) return;
   const t = data.tasks[idx];
+  // 取り消し用の控え。どの記録のどの内訳がこのタスクのものだったかは、削除後の
+  // 正本からは分からない(匿名化されるため)。意図を送る前に位置で控えておく。
   const undo = {
     task: t,
     index: idx,
-    wasSelected: data.selectedTaskId === id,
-    pomoPatches: [],
+    wasSelected: focusTaskId() === id,
+    patches: [],
     segPatches: []
   };
-  data.tasks.splice(idx, 1);
   for (const p of data.sessions) {
-    p.taskIds = p.taskIds.filter(tid => tid !== id);
-    (p.taskTimes || []).forEach((tt, i) => {
-      if (tt.taskId === id) {
-        tt.taskId = null;
-        undo.pomoPatches.push({ p, i });
-      }
-    });
+    const indexes = [];
+    (p.taskTimes || []).forEach((tt, i) => { if (tt.taskId === id) indexes.push(i); });
+    if (indexes.length) undo.patches.push({ sessionId: p.id, indexes });
   }
   if (timer.current) {
     const c = timer.current;
@@ -423,25 +436,22 @@ function deleteTask(id) {
       }
     }
   }
-  if (data.selectedTaskId === id) data.selectedTaskId = null;
-  save();
-  renderTasks();
-  renderFocusTask();
+  mutate({ type: 'task/delete', id });
   toast(`「${t.title}」を削除しました`, { label: '元に戻す', fn: () => restoreTask(undo) });
 }
 
 function restoreTask(u) {
-  data.tasks.splice(Math.min(u.index, data.tasks.length), 0, u.task);
-  for (const { p, i } of u.pomoPatches) {
-    p.taskTimes[i].taskId = u.task.id;
-    if (!p.taskIds.includes(u.task.id)) p.taskIds.push(u.task.id);
-  }
-  for (const s of u.segPatches) s.taskId = u.task.id;
-  if (u.wasSelected && !u.task.completed) data.selectedTaskId = u.task.id;
-  if (u.wasSelected) switchSegment(data.selectedTaskId);
-  save();
-  renderTasks();
-  renderFocusTask();
+  for (const s of u.segPatches) s.taskId = u.task.id;   // 実行中セッションはレンダラ側の状態
+  mutate({
+    type: 'task/restore',
+    task: u.task,
+    index: u.index,
+    patches: u.patches,
+    select: u.wasSelected && !u.task.completed
+  }).then(res => {
+    // 選択が戻ってから計測先を合わせる(戻せなかったときに動かすと実働の付け先がずれる)
+    if (res && res.ok !== false && u.wasSelected) switchSegment(focusTaskId());
+  });
 }
 
 /* ============ タイマー ============ */
@@ -521,7 +531,7 @@ function startPauseResume() {
       intervals: [],
       intStartAt: Date.now(),
       segments: [],
-      segTaskId: timer.mode === 'work' ? (data.selectedTaskId || null) : null,
+      segTaskId: timer.mode === 'work' ? focusTaskId() : null,
       segStartMs: 0
     };
     timer.lastTickAt = Date.now();
@@ -575,12 +585,13 @@ function stopEarly() {
 
 // 自動サイクルの進行(次フェーズ・長休憩までのカウント)を永続化する
 function persistFlow() {
-  data.timer = { mode: timer.mode, cycle: timer.cycle };
-  save();
+  mutate({ type: 'flow/set', mode: timer.mode, cycle: timer.cycle });
 }
 
 // 実行中セッション(フォーカス/休憩)を記録に積む(1分未満の中断は記録しない)
-function recordSession(completed) {
+// sync=true は終了時(beforeunload)専用。レンダラが破棄される前に書き込みを終える
+// 必要があり、応答は使えない(失敗と原本の退避は main がダイアログで知らせる)。
+function recordSession(completed, sync) {
   // 記録に落とす前に補正を済ませる。beforeunload からは直接呼ばれるため、ここで
   // 効かせないと closeInterval が睡眠込みの区間を確定してしまい、あとから
   // applySleep が届いても intStartAt が消えていて直せない。
@@ -601,18 +612,22 @@ function recordSession(completed) {
     taskTimes = [...byTask.entries()].map(([taskId, durationSec]) => ({ taskId, durationSec }));
     taskIds = taskTimes.filter(tt => tt.taskId).map(tt => tt.taskId);
   }
-  data.sessions.push({
-    id: c.id,
-    mode: c.mode,
-    startedAt: c.startedAt,
-    endedAt: c.intervals.length ? c.intervals[c.intervals.length - 1].endedAt : new Date().toISOString(),
-    durationSec: elapsedSec,
-    completed,
-    intervals: c.intervals,
-    taskIds,
-    taskTimes
-  });
-  save();
+  const action = {
+    type: 'session/add',
+    session: {
+      id: c.id,
+      mode: c.mode,
+      startedAt: c.startedAt,
+      endedAt: c.intervals.length ? c.intervals[c.intervals.length - 1].endedAt : new Date().toISOString(),
+      durationSec: elapsedSec,
+      completed,
+      intervals: c.intervals,
+      taskIds,
+      taskTimes
+    }
+  };
+  if (sync) window.api.mutateSync(action);
+  else mutate(action);
 }
 
 function finishSession(completed) {
@@ -964,28 +979,35 @@ function populateSoundSelect(select, selectedName) {
   }
 }
 
-function saveSettings() {
+// 開いていた画面の項目だけを差分として送る。全体を送り返すと、その間に他所で
+// 変わった設定まで古い値で巻き戻してしまう。
+async function saveSettings() {
   const num = (sel, min, max, fallback) => {
     const v = parseInt($(sel).value, 10);
     return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
   };
   const s = data.settings;
-  s.workMin = num('#setWork', 1, 120, s.workMin);
-  s.shortMin = num('#setShort', 1, 60, s.shortMin);
-  s.longMin = num('#setLong', 1, 90, s.longMin);
-  s.longEvery = num('#setEvery', 1, 12, s.longEvery);
-  s.autoStartBreak = $('#setAutoBreak').checked;
-  s.autoStartWork = $('#setAutoWork').checked;
-  s.whiteNoise.enabled = $('#setNoiseOn').checked;
-  s.whiteNoise.file = $('#setNoiseFile').value;
-  s.whiteNoise.breakFile = $('#setNoiseBreakFile').value;
-  s.whiteNoise.volume = parseInt($('#setNoiseVol').value, 10) || 0;
-  save();
+  const patch = {
+    workMin: num('#setWork', 1, 120, s.workMin),
+    shortMin: num('#setShort', 1, 60, s.shortMin),
+    longMin: num('#setLong', 1, 90, s.longMin),
+    longEvery: num('#setEvery', 1, 12, s.longEvery),
+    autoStartBreak: $('#setAutoBreak').checked,
+    autoStartWork: $('#setAutoWork').checked,
+    whiteNoise: {
+      enabled: $('#setNoiseOn').checked,
+      file: $('#setNoiseFile').value,
+      breakFile: $('#setNoiseBreakFile').value,
+      volume: parseInt($('#setNoiseVol').value, 10) || 0
+    }
+  };
+  $('#settingsModal').hidden = true;
+  await mutate({ type: 'settings/update', patch });
+  // 反映後の正本から引き直す。main が丸めた値(範囲外の入力など)がそのまま効く。
   if (timer.status === 'idle') {
     timer.remainMs = modeDurationMs(timer.mode);
     timer.totalMs = timer.remainMs;
   }
-  $('#settingsModal').hidden = true;
   renderAll();
   updateNoise();
 }
@@ -1255,9 +1277,8 @@ $('#skipBtn').addEventListener('click', skipBreak);
 $('#previewBtn').addEventListener('click', () => previewSound('#setNoiseFile'));
 $('#previewBreakBtn').addEventListener('click', () => previewSound('#setNoiseBreakFile'));
 $('#noiseIndicator').addEventListener('click', () => {
-  data.settings.whiteNoise.enabled = !data.settings.whiteNoise.enabled;
-  save();
-  updateNoise();
+  const enabled = !data.settings.whiteNoise.enabled;
+  mutate({ type: 'settings/update', patch: { whiteNoise: { enabled } } }).then(() => updateNoise());
 });
 
 // Space: 開始/一時停止、Esc: モーダル・メニューを閉じる
@@ -1334,12 +1355,11 @@ document.querySelectorAll('.modal-backdrop').forEach(m => {
 });
 
 // アプリ終了・リロード時、実行中のセッションを中断として記録(1分以上のもの)。
-// recordSession の save() は非同期のため、beforeunload では完了を待てない。
-// 終了(Tray「終了」/Cmd+Q)でレンダラが破棄される前に確実に永続化するよう、
-// 同期 IPC でブロッキング保存する。
+// 変更は意図ごとに即ディスクへ乗っているので、ここで丸ごと保存し直す必要はない。
+// 残るのはこの打ち切り記録だけで、終了(Tray「終了」/Cmd+Q)でレンダラが破棄される
+// 前に書き終えるため同期 IPC でブロッキングする。
 window.addEventListener('beforeunload', () => {
-  if (timer.current) recordSession(false);
-  window.api.saveDataSync(data);
+  if (timer.current) recordSession(false, true);
 });
 
 init();

@@ -15,7 +15,7 @@ fs.writeFileSync(path.join(userData, 'pomodoro-data.json'), JSON.stringify({
 }));
 
 const app = await electron.launch({
-  executablePath: path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
+  executablePath: process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
   args: ['--no-sandbox', APP_DIR],
   env: { ...process.env, POMODORO_USER_DATA: userData },
   timeout: 30000
@@ -37,10 +37,12 @@ const compat = await page.evaluate(() => ({
 }));
 
 // B) 休憩音源が空のとき: 休憩中はノイズを鳴らさない
-await page.evaluate(() => {
-  data.settings.workMin = 0.05;
-  data.settings.shortMin = 0.05;
-  data.settings.whiteNoise.breakFile = '';      // 休憩音源を未選択に
+// テスト用に短いフォーカス/休憩へ。設定は 1 分未満にできない(正規化で丸まる)ので、
+// モード長を求める関数だけを差し替える。data を直接書き換えても、次の意図の応答で
+// 正本のスナップショットに戻されるため効かない。
+await page.evaluate(async () => {
+  modeDurationMs = () => 3000;
+  await mutate({ type: 'settings/update', patch: { whiteNoise: { breakFile: '' } } });   // 休憩音源を未選択に
 });
 await click('#startBtn');                        // フォーカス開始
 await page.waitForTimeout(800);

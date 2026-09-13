@@ -23,7 +23,8 @@ import * as os from 'node:os';
 //  AC) 終了時の記録(beforeunload)でも睡眠を実働にしない
 //  AD) 通知を取り逃したまま tick より先に停止されても補正する
 const APP_DIR = path.resolve(import.meta.dirname, '..');
-const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
+// 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
+const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
 const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 
@@ -178,10 +179,9 @@ let tGot;                                   // U でも同じセッションの�
   // 復帰時、tick(250ms)は power:resume より先に走りうる。そこで予定終了の超過を
   // 検知されると補正が届く前に完了扱いになり、この PR が直そうとしている
   // 「眠っていた分を丸ごと実働に計上する」挙動がそのまま残ってしまう。
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     // 自動開始が W 以降の状態に混ざらないよう切っておく
-    data.settings.autoStartBreak = false;
-    data.settings.autoStartWork = false;
+    await mutate({ type: 'settings/update', patch: { autoStartBreak: false, autoStartWork: false } });
     if (timer.status !== 'idle') stopEarly();
     timer.mode = 'work';
     startPauseResume();

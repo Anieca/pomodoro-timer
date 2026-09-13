@@ -13,7 +13,8 @@ import * as os from 'node:os';
 //  N) タスクの completedAt: 0(epoch) → 有効な日付として扱い、未完了に化かさない
 //  J) タスクの不正な createdAt → CSV 書き出しが "NaN-NaN-NaN" にならない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
-const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
+// 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
+const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
 const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 

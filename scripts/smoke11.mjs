@@ -8,7 +8,7 @@ const APP_DIR = path.resolve(import.meta.dirname, '..');
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
 
 const app = await electron.launch({
-  executablePath: path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
+  executablePath: process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
   args: ['--no-sandbox', APP_DIR],
   env: { ...process.env, POMODORO_USER_DATA: userData },
   timeout: 30000
@@ -27,8 +27,10 @@ const dumpSessions = () => page.evaluate(() => data.sessions.map(s => ({
   intervals: s.intervals.length, taskTimes: s.taskTimes.length
 })));
 
-// テスト用に短いフォーカス/休憩(秒単位)へ。設定値は分なので 0.06 分 ≈ 3.6 秒。
-await page.evaluate(() => { data.settings.workMin = 0.06; data.settings.shortMin = 0.06; });
+// テスト用に短いフォーカス/休憩(秒単位)へ。設定は 1 分未満にできない(正規化で
+// 丸まる)ので、モード長を求める関数だけを差し替える。data を直接書き換えても、
+// 次の意図の応答で正本のスナップショットに戻されるため効かない。
+await page.evaluate(() => { modeDurationMs = () => 3600; });
 
 // --- 1) フォーカスを 一時停止 → 再開 → 完走(intervals が 2 区間になる) ---
 await page.fill('.focus-quick-add input', '集中タスク');

@@ -11,7 +11,7 @@ fs.writeFileSync(path.join(userData, 'pomodoro-data.json'), JSON.stringify({
   settings: { workMin: 25, shortMin: 5, longMin: 15, longEvery: 4, whiteNoise: { enabled: true, file: 'white-noise.wav', volume: 50 } }
 }));
 const app = await electron.launch({
-  executablePath: path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
+  executablePath: process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
   args: ['--no-sandbox', APP_DIR],
   env: { ...process.env, POMODORO_USER_DATA: userData },
   timeout: 30000

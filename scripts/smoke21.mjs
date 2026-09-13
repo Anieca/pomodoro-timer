@@ -9,7 +9,8 @@ import * as os from 'node:os';
 //  F) 置き換えデータを書けない → 原本を退避も削除もしない(正本を消してから失敗しない)
 //  G) 最初の保存が終了時の同期保存だった場合 → 退避先をネイティブダイアログで知らせる
 const APP_DIR = path.resolve(import.meta.dirname, '..');
-const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
+// 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
+const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
 const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 
@@ -153,7 +154,7 @@ if (typeof process.getuid === 'function' && process.getuid() === 0) {
   const { app, page } = await launch(ud);
   // 非同期保存を一度も経ずに終了した状況(beforeunload の同期保存が最初の保存)。
   const res = await page.evaluate(() =>
-    window.api.saveDataSync({ tasks: [], sessions: [], selectedTaskId: null, settings: {} }));
+    window.api.mutateSync({ type: 'task/select', id: null }));
   const bk = preserved(ud);
   const shown = await dialogs(app);
   console.log('G: res=', JSON.stringify(res), 'dialogs=', JSON.stringify(shown));

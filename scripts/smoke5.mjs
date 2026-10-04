@@ -1,11 +1,12 @@
 import { _electron as electron } from 'playwright-core';
+import { ELECTRON } from './test-env.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 const APP_DIR = '/Users/ishiirub/Projects/pomodoro-timer';
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
 const app = await electron.launch({
-  executablePath: path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),
+  executablePath: ELECTRON,
   args: ['--no-sandbox', APP_DIR],
   env: { ...process.env, POMODORO_USER_DATA: userData },
   timeout: 30000

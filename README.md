@@ -27,7 +27,7 @@ npm start
 | スクリプト | 内容 |
 | --- | --- |
 | `npm start` | アプリを起動（`electron .`） |
-| `npm test` | Playwright スモークテスト一式を実行 |
+| `npm test` | Playwright スモークテスト一式を実行(ディスプレイの無い Linux では `xvfb-run -a npm test`) |
 | `node scripts/generate-noise.mjs` | ホワイト/ピンク/ブラウンノイズ音源を生成 |
 | `node scripts/smoke.mjs` | 個別のスモークテストを実行 |
 

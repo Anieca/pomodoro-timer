@@ -383,6 +383,82 @@ body.focusing .sidebar:hover, body.focusing .topbar:hover { opacity: 1; }
   margin: 0; padding: 0;
 }
 
+/* ============ 統計 ============ */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 2px; margin-right: 6px; }
+.seg button {
+  background: none; border: none; cursor: pointer; border-radius: 999px;
+  color: var(--cream-dim); font-family: var(--body); font-size: 12px; padding: 3px 12px;
+}
+.seg button.on { background: var(--bg-card); color: var(--cream); }
+.timeline-nav .ghost-btn:disabled { opacity: 0.3; cursor: default; }
+
+.stat-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
+.stat-tile {
+  background: var(--bg-card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; min-width: 0;
+}
+.stat-tile-label { font-size: 11px; color: var(--cream-dim); }
+.stat-tile-value { font-family: var(--display); font-size: 20px; color: var(--cream); white-space: nowrap; }
+.stat-tile-sub { font-size: 10px; color: #9a8873; min-height: 1.4em; }
+
+.stat-bars { margin-left: 36px; }
+.stat-plot { position: relative; }
+.stat-grid { position: absolute; left: 0; right: 0; height: 0; border-top: 1px solid rgba(58, 44, 34, 0.6); }
+.stat-grid.base { border-top-color: var(--line); }
+.stat-grid-label {
+  position: absolute; left: -36px; top: -7px; width: 30px; text-align: right;
+  font-size: 10px; color: var(--cream-dim);
+}
+.stat-cols { position: absolute; inset: 0; display: flex; gap: 2px; }
+.stat-col {
+  flex: 1; min-width: 0; height: 100%; display: flex; align-items: flex-end; justify-content: center;
+  background: none; border: none; padding: 0; cursor: pointer; border-radius: 4px;
+}
+.stat-col:hover:not(:disabled) { background: rgba(242, 231, 216, 0.04); }
+.stat-col:disabled { cursor: default; }
+.stat-bar { width: 70%; max-width: 28px; background: var(--tomato); border-radius: 4px 4px 0 0; }
+.stat-col:hover .stat-bar { background: #f06a52; }
+.stat-axis { display: flex; gap: 2px; margin-top: 6px; }
+.stat-axis-label { flex: 1; min-width: 0; text-align: center; font-size: 10px; color: var(--cream-dim); }
+.stat-axis-label.today { color: var(--cream); font-weight: 700; }
+
+.stat-tasks { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.stat-task { display: grid; grid-template-columns: 9.5em 1fr 5.5em; align-items: center; gap: 10px; font-size: 12px; }
+.stat-task-name { color: var(--cream); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat-task-name.muted { color: #9a8873; }
+.stat-task-track { height: 8px; }
+.stat-task-bar { display: block; height: 100%; min-width: 2px; background: var(--tomato); border-radius: 0 4px 4px 0; }
+.stat-task-val { color: var(--cream-dim); text-align: right; white-space: nowrap; }
+
+.stat-heat { display: inline-block; }
+.heat-grid { display: grid; gap: 3px; }
+.heat-label { font-size: 9px; color: var(--cream-dim); line-height: 1; align-self: center; }
+.heat-cell {
+  aspect-ratio: 1; border: none; padding: 0; border-radius: 3px; cursor: pointer;
+  background: rgba(242, 231, 216, 0.06);
+}
+.heat-cell.l1 { background: rgba(232, 85, 62, 0.28); }
+.heat-cell.l2 { background: rgba(232, 85, 62, 0.5); }
+.heat-cell.l3 { background: rgba(232, 85, 62, 0.75); }
+.heat-cell.l4 { background: var(--tomato); }
+.heat-cell.future { background: none; cursor: default; }
+.heat-cell.today { box-shadow: 0 0 0 1.5px var(--cream); }
+.heat-cell:hover:not(:disabled) { box-shadow: 0 0 0 1.5px var(--gold); }
+.heat-legend {
+  display: flex; align-items: center; justify-content: flex-end; gap: 3px;
+  margin-top: 8px; font-size: 10px; color: var(--cream-dim);
+}
+.heat-legend .heat-cell { width: 10px; height: 10px; cursor: default; }
+.heat-legend .heat-cell:hover { box-shadow: none; }
+
+.stat-tip {
+  position: fixed; z-index: 90; pointer-events: none;
+  background: var(--bg-card); border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 10px; font-size: 11px; line-height: 1.5; color: var(--cream-dim);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); white-space: nowrap;
+}
+.stat-tip b { color: var(--cream); font-weight: 700; }
+
 /* ============ トースト ============ */
 .toast {
   position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);

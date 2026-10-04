@@ -45,6 +45,7 @@
     <main class="stage">
       <div class="topbar">
         <div class="top-actions">
+          <button id="statsBtn" class="icon-btn" title="統計">統計</button>
           <button id="timelineBtn" class="icon-btn" title="タイムテーブル">タイムテーブル</button>
           <button id="historyBtn" class="icon-btn" title="履歴">履歴</button>
           <button id="settingsBtn" class="icon-btn" title="設定">設定</button>
@@ -157,6 +158,36 @@
     </div>
   </div>
 
+  <!-- ======= 統計モーダル ======= -->
+  <div class="modal-backdrop" id="statsModal" hidden>
+    <div class="modal modal-wide">
+      <div class="timeline-header">
+        <h2>統計</h2>
+        <div class="timeline-nav">
+          <div class="seg" id="stRange">
+            <button data-range="week" class="on">週</button>
+            <button data-range="month">月</button>
+          </div>
+          <button id="stPrev" class="ghost-btn" title="前へ">‹</button>
+          <span id="stLabel" class="timeline-date"></span>
+          <button id="stNext" class="ghost-btn" title="次へ">›</button>
+          <button id="stNow" class="ghost-btn">今</button>
+        </div>
+      </div>
+      <div id="statTiles" class="stat-tiles"></div>
+      <h3>日別の集中時間</h3>
+      <div id="statBars" class="stat-bars"></div>
+      <h3>タスク別の集中時間</h3>
+      <ul id="statTasks" class="stat-tasks"></ul>
+      <h3>直近16週間</h3>
+      <div id="statHeat" class="stat-heat"></div>
+      <div class="modal-actions">
+        <button id="statsClose" class="primary-btn">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="statTip" class="stat-tip" hidden></div>
   <div id="toast" class="toast" hidden></div>
   <script src="app.js"></script>
 </body>

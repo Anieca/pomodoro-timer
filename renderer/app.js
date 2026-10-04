@@ -1182,8 +1182,8 @@ function renderTimeline() {
   body.scrollTop = Math.max(0, (focusMin - rangeStartMin) * TL_PX_PER_MIN - 40);
 }
 
-function openTimeline() {
-  timelineDay = startOfDay(new Date());
+function openTimeline(day) {
+  timelineDay = startOfDay(day instanceof Date ? day : new Date());
   // 先にモーダルを表示してから描画する。display:none のままだと
   // renderTimeline 内の scrollTop 設定が無視され、初回が 0:00 起点になるため。
   $('#timelineModal').hidden = false;
@@ -1195,6 +1195,363 @@ function shiftTimelineDay(days) {
   d.setDate(d.getDate() + days);                         // ローカル日付で前後(月跨ぎも安全)
   timelineDay = startOfDay(d);
   renderTimeline();
+}
+
+/* ============ 統計(週・月の振り返り) ============ */
+// 日付の帰属はサイドバーの「今日」や履歴と揃えて「開始した日」にする。
+// 日をまたいだセッションを区間で按分すると、同じ日の数字が画面ごとに食い違うため。
+let statsRange = 'week';                // 'week' | 'month'
+let statsAnchor = startOfDay(new Date());
+const HEAT_WEEKS = 16;
+
+// ローカル日付のキー(Map 用)
+const dayKey = d => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return startOfDay(x); };
+// 月曜始まりの週頭
+const startOfWeek = d => addDays(d, -((d.getDay() + 6) % 7));
+
+// "1時間5分" / "45分"
+function fmtDur(min) {
+  const m = Math.round(min);
+  if (m < 60) return `${m}分`;
+  return m % 60 ? `${Math.floor(m / 60)}時間${m % 60}分` : `${m / 60}時間`;
+}
+
+// 実行中フォーカスのタスク別時間(まだ記録に積まれていない分)
+function liveTaskTimes() {
+  const c = timer.current;
+  if (!c || c.mode !== 'work') return [];
+  const out = c.segments.map(s => ({ taskId: s.taskId, durationSec: s.durationSec }));
+  out.push({ taskId: c.segTaskId, durationSec: Math.max(0, (pomoElapsedMs() - c.segStartMs) / 1000) });
+  return out;
+}
+
+// 日別の集中秒数と完走ポモドーロ数。実行中のフォーカスも開始日に含める。
+function dailyTotals() {
+  const map = new Map();
+  const get = k => { if (!map.has(k)) map.set(k, { sec: 0, pomos: 0 }); return map.get(k); };
+  for (const s of data.sessions) {
+    if (s.mode !== 'work') continue;
+    const v = get(dayKey(new Date(s.startedAt)));
+    v.sec += s.durationSec;
+    if (s.completed) v.pomos++;
+  }
+  if (timer.current && timer.current.mode === 'work') {
+    get(dayKey(new Date(timer.current.startedAt))).sec += pomoElapsedMs() / 1000;
+  }
+  return map;
+}
+
+// 表示中の期間 [start, end)
+function statsPeriod(range = statsRange, anchor = statsAnchor) {
+  if (range === 'week') {
+    const start = startOfWeek(anchor);
+    return { start, end: addDays(start, 7) };
+  }
+  const start = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  return { start, end: new Date(anchor.getFullYear(), anchor.getMonth() + 1, 1) };
+}
+
+// 完走ポモドーロが1つ以上ある日の連続記録。今日がまだ0でも昨日まで続いていれば途切れていない。
+function streaks(totals) {
+  const has = d => (totals.get(dayKey(d)) || { pomos: 0 }).pomos > 0;
+  const today = startOfDay(new Date());
+  let d = has(today) ? today : addDays(today, -1);
+  let current = 0;
+  while (has(d)) { current++; d = addDays(d, -1); }
+  // 最長記録は記録のある日を古い順に並べて数える
+  const days = [...totals.entries()].filter(([, v]) => v.pomos > 0)
+    .map(([k]) => { const [y, m, dd] = k.split('-').map(Number); return new Date(y, m - 1, dd).getTime(); })
+    .sort((a, b) => a - b);
+  let best = 0, run = 0, prev = null;
+  for (const t of days) {
+    run = prev !== null && addDays(new Date(prev), 1).getTime() === t ? run + 1 : 1;
+    best = Math.max(best, run);
+    prev = t;
+  }
+  return { current, best: Math.max(best, current) };
+}
+
+// 期間内の集計(画面とテストの両方から使う)
+function computeStats(range = statsRange, anchor = statsAnchor) {
+  const { start, end } = statsPeriod(range, anchor);
+  const totals = dailyTotals();
+  const today = startOfDay(new Date());
+  const days = [];
+  for (let d = start; d < end; d = addDays(d, 1)) {
+    const v = totals.get(dayKey(d)) || { sec: 0, pomos: 0 };
+    days.push({ date: d, min: v.sec / 60, pomos: v.pomos, future: d > today });
+  }
+  const sumMin = days.reduce((s, x) => s + x.min, 0);
+  const pomos = days.reduce((s, x) => s + x.pomos, 0);
+  // 平均は「経過した日数」で割る(週の途中で未来の日まで割ると不当に低くなる)
+  const elapsed = days.filter(x => !x.future).length;
+
+  // 直前の同じ長さの期間(前週・前月)との比較
+  const prevAnchor = range === 'week' ? addDays(start, -7) : new Date(start.getFullYear(), start.getMonth() - 1, 1);
+  const prev = statsPeriod(range, prevAnchor);
+  let prevMin = 0;
+  for (let d = prev.start; d < prev.end; d = addDays(d, 1)) prevMin += ((totals.get(dayKey(d)) || { sec: 0 }).sec) / 60;
+
+  // タスク別(開始日が期間内のフォーカスのみ)
+  const byTask = new Map();
+  const addTask = (id, sec) => byTask.set(id, (byTask.get(id) || 0) + sec);
+  const inPeriod = iso => { const t = new Date(iso); return t >= start && t < end; };
+  for (const s of data.sessions) {
+    if (s.mode !== 'work' || !inPeriod(s.startedAt)) continue;
+    for (const tt of s.taskTimes) addTask(tt.taskId ?? null, tt.durationSec);
+  }
+  if (timer.current && timer.current.mode === 'work' && inPeriod(timer.current.startedAt)) {
+    for (const tt of liveTaskTimes()) addTask(tt.taskId ?? null, tt.durationSec);
+  }
+  const tasks = [...byTask.entries()]
+    .map(([taskId, sec]) => ({ taskId, min: sec / 60 }))
+    .filter(x => x.min >= 0.5)
+    .sort((a, b) => b.min - a.min);
+
+  return { start, end, days, sumMin, pomos, avgMin: elapsed ? sumMin / elapsed : 0, prevMin, tasks, streak: streaks(totals), totals };
+}
+
+function renderStats() {
+  const st = computeStats();
+  const { start, end } = st;
+  const last = addDays(end, -1);
+  $('#stLabel').textContent = statsRange === 'week'
+    ? `${start.getMonth() + 1}/${start.getDate()} – ${last.getMonth() + 1}/${last.getDate()}`
+    : `${start.getFullYear()}年${start.getMonth() + 1}月`;
+  // 未来へは進めない
+  $('#stNext').disabled = end > startOfDay(new Date());
+  document.querySelectorAll('#stRange button').forEach(b => b.classList.toggle('on', b.dataset.range === statsRange));
+
+  renderStatTiles(st);
+  renderStatBars(st);
+  renderStatTasks(st);
+  renderStatHeat(st.totals);
+}
+
+function renderStatTiles(st) {
+  const wrap = $('#statTiles');
+  wrap.textContent = '';
+  const unit = statsRange === 'week' ? '前週' : '前月';
+  let delta = '';
+  if (st.prevMin >= 1) {
+    const pct = Math.round((st.sumMin - st.prevMin) / st.prevMin * 100);
+    delta = `${unit}比 ${pct >= 0 ? '+' : '−'}${Math.abs(pct)}%`;
+  } else if (st.sumMin >= 1) {
+    delta = `${unit}は記録なし`;
+  }
+  const tiles = [
+    { label: '集中時間', value: fmtDur(st.sumMin), sub: delta },
+    { label: '完走ポモドーロ', value: `${st.pomos} 🍅`, sub: '' },
+    { label: '1日平均', value: fmtDur(st.avgMin), sub: '経過日数で平均' },
+    { label: '連続日数', value: `${st.streak.current}日`, sub: `最長 ${st.streak.best}日` }
+  ];
+  for (const t of tiles) {
+    const el = document.createElement('div');
+    el.className = 'stat-tile';
+    const l = document.createElement('div'); l.className = 'stat-tile-label'; l.textContent = t.label;
+    const v = document.createElement('div'); v.className = 'stat-tile-value'; v.textContent = t.value;
+    const s = document.createElement('div'); s.className = 'stat-tile-sub'; s.textContent = t.sub;
+    el.append(l, v, s);
+    wrap.appendChild(el);
+  }
+}
+
+// 目盛りの間隔(分)。線が多くても4本程度に収まるよう選ぶ。
+function niceStep(maxMin) {
+  for (const s of [15, 30, 60, 120, 180, 240, 360]) if (maxMin / s <= 4) return s;
+  return 480;
+}
+
+function renderStatBars(st) {
+  const wrap = $('#statBars');
+  wrap.textContent = '';
+  const maxMin = Math.max(...st.days.map(d => d.min), 0);
+  const step = niceStep(Math.max(maxMin, 60));
+  const top = Math.ceil(Math.max(maxMin, 60) / step) * step;
+  const H = 140;
+
+  const plot = document.createElement('div');
+  plot.className = 'stat-plot';
+  plot.style.height = H + 'px';
+  for (let v = 0; v <= top; v += step) {
+    const line = document.createElement('div');
+    line.className = 'stat-grid' + (v === 0 ? ' base' : '');
+    line.style.bottom = (v / top * H) + 'px';
+    const lab = document.createElement('span');
+    lab.className = 'stat-grid-label';
+    lab.textContent = v === 0 ? '0' : (v % 60 ? `${v}分` : `${v / 60}h`);
+    line.appendChild(lab);
+    plot.appendChild(line);
+  }
+
+  const cols = document.createElement('div');
+  cols.className = 'stat-cols';
+  const axis = document.createElement('div');
+  axis.className = 'stat-axis';
+  const todayKey = dayKey(new Date());
+  const isWeek = statsRange === 'week';
+  for (const d of st.days) {
+    const col = document.createElement('button');
+    col.className = 'stat-col' + (d.future ? ' future' : '');
+    col.disabled = d.future;
+    if (d.min > 0) {
+      const bar = document.createElement('div');
+      bar.className = 'stat-bar';
+      bar.style.height = Math.max(2, d.min / top * H) + 'px';
+      col.appendChild(bar);
+    }
+    const dateText = `${d.date.getMonth() + 1}/${d.date.getDate()} (${WEEKDAYS[d.date.getDay()]})`;
+    col.setAttribute('aria-label', `${dateText} ${fmtDur(d.min)}`);
+    if (!d.future) {
+      bindTip(col, () => `<b>${dateText}</b><br>${fmtDur(d.min)} · ${d.pomos}🍅`);
+      col.addEventListener('click', () => openTimelineAt(d.date));
+    }
+    cols.appendChild(col);
+
+    const lab = document.createElement('span');
+    lab.className = 'stat-axis-label' + (dayKey(d.date) === todayKey ? ' today' : '');
+    const n = d.date.getDate();
+    // 月表示は 1・5・10… 日だけ数字を出す(31本に全部出すと詰まる)
+    lab.textContent = isWeek ? WEEKDAYS[d.date.getDay()] : (n === 1 || n % 5 === 0 ? String(n) : '');
+    axis.appendChild(lab);
+  }
+  plot.appendChild(cols);
+  wrap.append(plot, axis);
+}
+
+function renderStatTasks(st) {
+  const list = $('#statTasks');
+  list.textContent = '';
+  if (st.tasks.length === 0) {
+    const li = document.createElement('li');
+    li.className = 'empty-note';
+    li.textContent = 'この期間の記録はありません';
+    list.appendChild(li);
+    return;
+  }
+  // 上位6件 + その他(行が延々と伸びないように)
+  const TOP = 6;
+  const rows = st.tasks.slice(0, TOP).map(x => {
+    if (x.taskId === null) return { label: 'タスクなし', min: x.min, muted: true };
+    const t = data.tasks.find(t => t.id === x.taskId);
+    return { label: t ? t.title : '(削除済み)', min: x.min, muted: !t };
+  });
+  const rest = st.tasks.slice(TOP).reduce((s, x) => s + x.min, 0);
+  if (rest > 0) rows.push({ label: `その他 ${st.tasks.length - TOP}件`, min: rest, muted: true });
+  const max = Math.max(...rows.map(r => r.min));
+  const total = st.tasks.reduce((s, x) => s + x.min, 0);
+  for (const r of rows) {
+    const li = document.createElement('li');
+    li.className = 'stat-task';
+    const name = document.createElement('span');
+    name.className = 'stat-task-name' + (r.muted ? ' muted' : '');
+    name.textContent = r.label;
+    name.title = r.label;
+    const track = document.createElement('span');
+    track.className = 'stat-task-track';
+    const bar = document.createElement('span');
+    bar.className = 'stat-task-bar';
+    bar.style.width = (r.min / max * 100) + '%';
+    track.appendChild(bar);
+    const val = document.createElement('span');
+    val.className = 'stat-task-val';
+    val.textContent = fmtDur(r.min);
+    li.append(name, track, val);
+    bindTip(li, () => `<b>${escapeHtml(r.label)}</b><br>${fmtDur(r.min)} · ${Math.round(r.min / total * 100)}%`);
+    list.appendChild(li);
+  }
+}
+
+// 直近16週の草。行 = 曜日(月〜日)、列 = 週。濃さはポモドーロ換算の量で決める。
+function renderStatHeat(totals) {
+  const wrap = $('#statHeat');
+  wrap.textContent = '';
+  const today = startOfDay(new Date());
+  const first = addDays(startOfWeek(today), -(HEAT_WEEKS - 1) * 7);
+  const workMin = data.settings.workMin || 25;
+  const level = min => {
+    if (min <= 0) return 0;
+    const p = min / workMin;
+    return p < 2 ? 1 : p < 4 ? 2 : p < 6 ? 3 : 4;
+  };
+
+  const grid = document.createElement('div');
+  grid.className = 'heat-grid';
+  grid.style.gridTemplateColumns = `24px repeat(${HEAT_WEEKS}, 16px)`;
+  for (let row = 0; row < 7; row++) {
+    const lab = document.createElement('span');
+    lab.className = 'heat-label';
+    // 月・水・金だけ出す(全部だと詰まる)
+    lab.textContent = row % 2 === 0 ? WEEKDAYS[(row + 1) % 7] : '';
+    grid.appendChild(lab);
+    for (let w = 0; w < HEAT_WEEKS; w++) {
+      const d = addDays(first, w * 7 + row);
+      const cell = document.createElement('button');
+      if (d > today) {
+        cell.className = 'heat-cell future';
+        cell.disabled = true;
+      } else {
+        const v = totals.get(dayKey(d)) || { sec: 0, pomos: 0 };
+        const min = v.sec / 60;
+        cell.className = `heat-cell l${level(min)}` + (d.getTime() === today.getTime() ? ' today' : '');
+        const dateText = `${d.getMonth() + 1}/${d.getDate()} (${WEEKDAYS[d.getDay()]})`;
+        cell.setAttribute('aria-label', `${dateText} ${fmtDur(min)}`);
+        bindTip(cell, () => `<b>${dateText}</b><br>${min > 0 ? `${fmtDur(min)} · ${v.pomos}🍅` : '記録なし'}`);
+        cell.addEventListener('click', () => openTimelineAt(d));
+      }
+      grid.appendChild(cell);
+    }
+  }
+  const legend = document.createElement('div');
+  legend.className = 'heat-legend';
+  legend.append('少');
+  for (let i = 0; i <= 4; i++) {
+    const c = document.createElement('span');
+    c.className = `heat-cell l${i}`;
+    legend.appendChild(c);
+  }
+  legend.append('多');
+  wrap.append(grid, legend);
+}
+
+const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// ホバーで小さなツールチップを出す(マークより広い領域を当たり判定にする)
+function bindTip(el, html) {
+  const tip = $('#statTip');
+  el.addEventListener('mouseenter', () => {
+    tip.innerHTML = html();
+    tip.hidden = false;
+    const r = el.getBoundingClientRect();
+    const tr = tip.getBoundingClientRect();
+    const left = Math.min(window.innerWidth - tr.width - 8, Math.max(8, r.left + r.width / 2 - tr.width / 2));
+    const top = r.top - tr.height - 8 < 8 ? r.bottom + 8 : r.top - tr.height - 8;
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+  });
+  el.addEventListener('mouseleave', () => { tip.hidden = true; });
+}
+
+function openStats() {
+  statsRange = 'week';
+  statsAnchor = startOfDay(new Date());
+  renderStats();
+  $('#statsModal').hidden = false;
+}
+
+function shiftStats(dir) {
+  statsAnchor = statsRange === 'week'
+    ? addDays(statsAnchor, dir * 7)
+    : new Date(statsAnchor.getFullYear(), statsAnchor.getMonth() + dir, 1);
+  renderStats();
+}
+
+// 統計の日付からその日のタイムテーブルへ移る
+function openTimelineAt(day) {
+  $('#statsModal').hidden = true;
+  $('#statTip').hidden = true;
+  openTimeline(day);
 }
 
 /* ============ トースト ============ */
@@ -1266,6 +1623,7 @@ document.addEventListener('keydown', e => {
     const openModal = document.querySelector('.modal-backdrop:not([hidden])');
     document.querySelectorAll('.modal-backdrop:not([hidden])').forEach(m => { m.hidden = true; });
     $('#exportMenu').hidden = true;
+    $('#statTip').hidden = true;
     if (openModal) updateNoise();
     return;
   }
@@ -1308,11 +1666,23 @@ $('#historyBtn').addEventListener('click', () => {
 });
 $('#historyClose').addEventListener('click', () => { $('#historyModal').hidden = true; });
 
-$('#timelineBtn').addEventListener('click', openTimeline);
+$('#statsBtn').addEventListener('click', openStats);
+$('#statsClose').addEventListener('click', () => { $('#statsModal').hidden = true; });
+$('#stPrev').addEventListener('click', () => shiftStats(-1));
+$('#stNext').addEventListener('click', () => shiftStats(1));
+$('#stNow').addEventListener('click', () => { statsAnchor = startOfDay(new Date()); renderStats(); });
+$('#stRange').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-range]');
+  if (!btn || btn.dataset.range === statsRange) return;
+  statsRange = btn.dataset.range;
+  renderStats();
+});
+
+$('#timelineBtn').addEventListener('click', () => openTimeline());
 $('#timelineClose').addEventListener('click', () => { $('#timelineModal').hidden = true; });
 $('#tlPrev').addEventListener('click', () => shiftTimelineDay(-1));
 $('#tlNext').addEventListener('click', () => shiftTimelineDay(1));
-$('#tlToday').addEventListener('click', openTimeline);
+$('#tlToday').addEventListener('click', () => openTimeline());
 
 $('#exportBtn').addEventListener('click', () => {
   $('#exportMenu').hidden = !$('#exportMenu').hidden;

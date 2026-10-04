@@ -459,22 +459,9 @@ function toggleTaskDone(id, completed) {
 }
 
 function deleteTask(id) {
-  const idx = data.tasks.findIndex(t => t.id === id);
-  if (idx === -1) return;
-  const t = data.tasks[idx];
-  // 取り消し用の控え。どの記録のどの内訳がこのタスクのものだったかは、削除後の
-  // 正本からは分からない(匿名化されるため)。意図を送る前に位置で控えておく。
-  const undo = {
-    task: t,
-    index: idx,
-    wasSelected: focusTaskId() === id,
-    patches: []
-  };
-  for (const p of data.sessions) {
-    const indexes = [];
-    (p.taskTimes || []).forEach((tt, i) => { if (tt.taskId === id) indexes.push(i); });
-    if (indexes.length) undo.patches.push({ sessionId: p.id, indexes });
-  }
+  const t = data.tasks.find(t => t.id === id);
+  if (!t) return;
+  const wasSelected = focusTaskId() === id;
   // 実行中セッションの内訳はここでは匿名化しない。応答前に匿名化すると、その間に
   // セッションが終わったとき、記録は匿名のまま送られ(タスク別に合算済みなので
   // 後から切り分けられない)、削除が失敗してタスクが残っても帰属は戻らない。
@@ -483,8 +470,16 @@ function deleteTask(id) {
   // 付け先だけは今外す(フォーカスの要求と揃える。失敗なら mutateFocus が戻す)。
   if (timer.current && timer.current.segTaskId === id) switchSegment(null);
   const action = { type: 'task/delete', id };
-  if (undo.wasSelected) mutateFocus(null, action); else mutate(action);
-  toast(`「${t.title}」を削除しました`, { label: '元に戻す', fn: () => restoreTask(undo) });
+  // 取り消しの控えは main が削除の直前の正本から作って応答に添える。押されたのが
+  // 応答前なら、削除が通ったと分かってから送る(通っていなければ戻すものが無い)。
+  // 応答済みならその場で送る。後回しにすると、直後に送られる記録などより後ろに
+  // 並び、main での適用順が入れ替わる。
+  let settled = null;
+  const undoWith = res => { if (!failed(res) && res.undo) restoreTask({ ...res.undo, wasSelected }); };
+  const sent = (wasSelected ? mutateFocus(null, action) : mutate(action)).then(res => { settled = { res }; return res; });
+  toast(`「${t.title}」を削除しました`, { label: '元に戻す', fn: () => {
+    if (settled) undoWith(settled.res); else sent.then(undoWith);
+  } });
 }
 
 function restoreTask(u) {

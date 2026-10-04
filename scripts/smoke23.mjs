@@ -26,6 +26,7 @@ import * as os from 'node:os';
 //  AG) 完了を送ったタスクの行を応答前に押しても、付け先にならない
 //  AH) 保存できなかった記録は捨てず、書けるようになったら送り直す
 //  AI) 削除の応答待ちにセッションが終わり、その削除が失敗しても帰属は残る
+//  AJ) 応答待ちの編集のあとに削除しても、取り消しはその編集を巻き戻さない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -652,6 +653,30 @@ for (const fail of [false, true]) {
   console.log('AI: tasks=', JSON.stringify(saved.tasks.map(t => t.id)), 'record=', JSON.stringify(rec && rec.taskTimes));
   assert(saved.tasks.some(t => t.id === 'ai1'), 'AI: 削除は失敗してタスクは残る');
   assert(rec && rec.taskIds.includes('ai1'), 'AI: 応答待ちに終わった記録もそのタスクに付いたまま');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AJ: 応答待ちの編集のあとに削除しても、取り消しは編集を巻き戻さない ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(t => mutate({ type: 'task/add', task: t }), task('aj1', '元の名前'));
+  await page.waitForTimeout(200);
+  await slowWrites(app, 400);
+  // 完了と名前の変更が main に届く前に、まだ古い内容で描かれている行を削除して取り消す。
+  await page.evaluate(() => {
+    mutate({ type: 'task/rename', id: 'aj1', title: '変えた名前' });
+    toggleTaskDone('aj1', true);
+    deleteTask('aj1');
+    document.querySelector('#toast .toast-action').click();
+  });
+  await page.waitForTimeout(3000);
+  const saved = readData(ud).tasks.find(t => t.id === 'aj1');
+  console.log('AJ: restored=', JSON.stringify(saved && { title: saved.title, completed: saved.completed }), 'errors=', errors);
+  assert(errors.length === 0, 'AJ: コンソール/ページエラーが出ない');
+  assert(saved && saved.completed === true, 'AJ: 取り消しで完了が巻き戻らない');
+  assert(saved && saved.title === '変えた名前', 'AJ: 取り消しで名前の変更が巻き戻らない');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

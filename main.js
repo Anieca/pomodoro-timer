@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, pow
 const path = require('path');
 const fs = require('fs');
 const { normalizeData, DEFAULT_SETTINGS } = require('./shared/schema');
-const { applyAction } = require('./shared/actions');
+const { applyAction, deletionUndo } = require('./shared/actions');
 
 if (process.env.POMODORO_USER_DATA) app.setPath('userData', process.env.POMODORO_USER_DATA);
 
@@ -494,9 +494,14 @@ function commit(action, senderWc) {
 ipcMain.handle('data:mutate', (e, action) => {
   if (!isTrusted(e)) return { ok: false, error: 'untrusted sender' };
   try {
+    // 削除なら、適用する直前の正本から取り消し用の控えを作って添える。
+    const undo = action && action.type === 'task/delete' ? deletionUndo(store, action.id) : null;
     const preserved = commit(action, e.sender);
+    const res = { ok: true, snapshot: store };
+    if (undo) res.undo = undo;
     // 原本を退避したことは黙らせない(レンダラがトーストで知らせる)。
-    return preserved ? { ok: true, snapshot: store, preserved } : { ok: true, snapshot: store };
+    if (preserved) res.preserved = preserved;
+    return res;
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err), snapshot: store };
   }

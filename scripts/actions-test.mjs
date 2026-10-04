@@ -6,7 +6,7 @@
 //  - 未知の意図を黙って素通りさせないこと
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const { applyAction } = require('../shared/actions.js');
+const { applyAction, deletionUndo } = require('../shared/actions.js');
 const { normalizeData } = require('../shared/schema.js');
 
 const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
@@ -99,6 +99,11 @@ const base = () => ({
   // 位置が範囲外でも落とさない(控えを作った後に他のタスクが減っている場合)
   const clamped = applyAction({ ...del, tasks: [] }, { type: 'task/restore', task: before.tasks[0], index: 9, patches, select: false });
   eq(clamped.tasks.map(t => t.id), ['t1'], 'task/restore: 範囲外の位置は末尾に寄せる');
+  // 取り消しの控えは削除直前の正本から作る(main が呼ぶ)。控えで戻せば往復する。
+  const u = deletionUndo(before, 't1');
+  eq({ task: u.task.id, index: u.index, patches: u.patches }, { task: 't1', index: 0, patches }, 'deletionUndo: 削除直前の正本から位置と内訳を控える');
+  eq(sorted(normalizeData(applyAction(del, { type: 'task/restore', ...u, select: true }))), sorted(normalizeData(before)), 'deletionUndo: 控えで戻すと削除前と同じ内容になる');
+  assert(deletionUndo(before, 'nope') === null, 'deletionUndo: 無いタスクには控えを作らない');
   // 削除が失敗して正本に残っているタスクを戻しても、二重にしない。
   const twice = applyAction(before, { type: 'task/restore', task: before.tasks[0], index: 0, patches, select: true });
   eq(twice.tasks.map(t => t.id), before.tasks.map(t => t.id), 'task/restore: 既にあるタスクは挿入しない');

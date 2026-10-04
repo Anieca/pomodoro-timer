@@ -163,4 +163,22 @@ function applyAction(state, action) {
   }
 }
 
-module.exports = { applyAction };
+// 削除を取り消すための控え。削除を適用する直前の正本から作る(main が呼ぶ)。
+// レンダラの手元から作ると、応答待ちの編集(完了・名前の変更)より古い内容になり、
+// 取り消しがそれを黙って巻き戻してしまう。どの記録のどの内訳がこのタスクのもの
+// だったかは削除後の正本からは分からない(匿名化されるため)ので、位置で控える。
+function deletionUndo(state, id) {
+  const s = asObject(state);
+  const tasks = asArray(s.tasks);
+  const index = tasks.findIndex(t => asObject(t).id === id);
+  if (index === -1) return null;
+  const patches = [];
+  for (const p of asArray(s.sessions)) {
+    const indexes = [];
+    asArray(asObject(p).taskTimes).forEach((tt, i) => { if (asObject(tt).taskId === id) indexes.push(i); });
+    if (indexes.length) patches.push({ sessionId: asObject(p).id, indexes });
+  }
+  return { task: tasks[index], index, patches };
+}
+
+module.exports = { applyAction, deletionUndo };

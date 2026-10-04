@@ -6,7 +6,8 @@
 // 古い内容で上書きされて編集2が失われる。意図なら main が受け取った順に正本へ
 // 適用するので、同時に走った編集同士が消し合わない。
 //
-// schema.js と同じく electron に依存しない純粋なモジュールにしてある。
+// schema.js と同じく electron に依存しない純粋なモジュールにしてある。レンダラも
+// 同じものを <script> で読み、応答待ちの意図を正本に当てた見込みを描くのに使う。
 // 受け取った state は書き換えず、新しいオブジェクトを返す。
 //
 // 範囲・型の検証はここではしない。適用結果は main が必ず normalizeData に通すので、
@@ -86,6 +87,8 @@ function applyAction(state, action) {
   switch (a.type) {
     // id と作成時刻はレンダラが採番して送る(reducer を時計に依存させないため)。
     case 'task/add':
+      // 同じ id は積まない(レンダラの見込みで当て直されても二重にならない)。
+      if (tasks.some(t => asObject(t).id === asObject(a.task).id)) return s;
       return { ...s, tasks: [asObject(a.task), ...tasks] };
 
     case 'task/rename':
@@ -182,4 +185,5 @@ function deletionUndo(state, id) {
   return { task: tasks[index], index, patches, selected: s.selectedTaskId === id };
 }
 
-module.exports = { applyAction, deletionUndo };
+// レンダラ(<script>)では関数がそのまま global に出る。
+if (typeof module !== 'undefined') module.exports = { applyAction, deletionUndo };

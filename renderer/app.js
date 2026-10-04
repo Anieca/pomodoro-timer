@@ -1,17 +1,26 @@
 const $ = sel => document.querySelector(sel);
 
-// 保存データは main が正本を持つ。ここにあるのは init() が受け取ったスナップショットで、
-// 検証(日付・範囲・型)は shared/schema.js で済んでいる。
-// これは読み込みが返るまでの仮表示。contextBridge 越しの既定値は凍結されているため複製する。
-let data = {
+// 保存データの正本は main が持つ。committed は main から最後に受け取った正本、
+// pending は送ったがまだ応答の無い意図(送った順)。画面が読む data は、正本に
+// pending を main と同じ reducer(shared/actions.js)で順に当てて正規化した「見込み」。
+// main は意図を受け取った順に適用するので、応答が来るたびに正本を差し替えて残りを
+// 当て直せば、応答待ちの間も main がこれから作る状態を描ける。失敗した意図は外れる
+// ので、見込みはそのまま正本へ戻る。完了・選択・削除・設定などを機能ごとに
+// 「要求中の値」で持つ必要はなく、どれも data を読めばよい。
+// 読み込みが返るまでの仮表示。contextBridge 越しの既定値は凍結されているため複製する。
+let committed = {
   tasks: [], sessions: [], selectedTaskId: null,
   settings: structuredClone(window.api.defaultSettings),
   timer: { mode: 'work', cycle: 0 }
 };
+let data = committed;
+const pending = [];                 // { seq, action, local, durable, inFlight, failed }
+const unsettled = new Set();        // まだ一度も応答の無い意図の seq
+let seq = 0;
 let soundsCache = [];
 
 // timer.current: 実行中セッション
-//   { id, mode, startedAt, intervals: [{startedAt,endedAt}], intStartAt, segments, segTaskId, segStartMs }
+//   { id, mode, startedAt, intervals: [{startedAt,endedAt}], intStartAt, segments, segTaskId, segStartMs, segSeq }
 // intervals は一時停止で区切られた実働区間。タイムブロックへの plot 用に壁時計の絶対時刻を保持する。
 const timer = {
   mode: 'work',          // 'work' | 'short' | 'long'
@@ -28,73 +37,81 @@ const timer = {
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const SAVE_FAILED = '保存に失敗しました。ディスクの空き容量や権限を確認してください';
+const failed = res => !res || res.ok === false;
+const focusTaskId = () => data.selectedTaskId || null;
 
-// 受け取った正本を画面に反映する唯一の経路。data への代入はここだけで起きる。
-function applySnapshot(snapshot) {
-  if (!snapshot) return;
-  data = snapshot;
+// 見込みを作り直して描く。フォーカスの見込みが動いたら、実行中の付け先も合わせる。
+function project() {
+  let s = committed;
+  for (const p of pending) s = applyAction(s, p.local) || s;
+  data = pending.length ? normalizeData(s) : committed;
+  switchSegment(focusTaskId());
   renderAll();
 }
 
-// 応答の共通処理。成功でも失敗でも main が添えてきた正本を描く。失敗時にそれを
-// 捨てて手元を残すと、保存されていない内容が画面に居座り、次の操作でその上に
+// 変更は「何をしたいか」だけ送る。
+// - local: 見込みに当てる意図(既定は送るものと同じ)。main だけが中身を知る意図
+//   (task/undelete)は、手元で分かる範囲の近似を当てる。
+// - durable: 失敗しても捨てず、次に保存が通ったときと終了時に送り直す意図の鍵。
+//   記録(session/add)と進行状態(flow/set)は送った直後に手元から消えるので、
+//   捨てるとどこにも残らない。同じ鍵の古いものは新しいものに置き換わる。
+function mutate(action, { local = action, durable } = {}) {
+  if (durable) {
+    for (let i = pending.length - 1; i >= 0; i--) {
+      if (pending[i].durable === durable && pending[i].failed) pending.splice(i, 1);
+    }
+  }
+  const entry = { seq: ++seq, action, local, durable, inFlight: false, failed: false };
+  pending.push(entry);
+  project();
+  return send(entry);
+}
+
+function send(entry) {
+  entry.inFlight = true;
+  unsettled.add(entry.seq);
+  return window.api.mutate(entry.action).then(res => res, () => null).then(res => settle(entry, res));
+}
+
+// 応答の共通処理。成功でも失敗でも main が添えてきた正本を採る。失敗時に手元の
+// 見込みを残すと、保存されていない内容が画面に居座り、次の操作でその上に
 // 積み上がってしまう(ディスクの正史と画面が静かにずれる)。
-function settle(res) {
-  if (!res) { toast(SAVE_FAILED); return null; }
-  applySnapshot(res.snapshot);
-  if (res.ok === false) toast(res.error ? `保存に失敗しました: ${res.error}` : SAVE_FAILED);
-  else retryUnsaved();              // 書けるようになったら、書けていない分を送り直す
-  if (res.ok !== false && res.preserved) toast(`読み込めなかった元のデータファイルを ${res.preserved} に退避しました`);
+function settle(entry, res) {
+  entry.inFlight = false;
+  if (res && res.snapshot) committed = res.snapshot;
+  const ok = !failed(res);
+  const superseded = entry.durable && pending.some(p => p !== entry && p.durable === entry.durable && p.seq > entry.seq);
+  if (ok || !entry.durable || superseded) pending.splice(pending.indexOf(entry), 1);
+  else entry.failed = true;
+  // この意図が最後の見込みだった間に付けた内訳を、決着後の正本の選択に付け直す。
+  if (unsettled.delete(entry.seq)) settleSegments(entry.seq, committed.selectedTaskId);
+  project();
+  flushHeldRecords();
+  if (!res) toast(SAVE_FAILED);
+  else if (!ok) toast(res.error ? `保存に失敗しました: ${res.error}` : SAVE_FAILED);
+  else {
+    if (res.preserved) toast(`読み込めなかった元のデータファイルを ${res.preserved} に退避しました`);
+    retryDurable();                 // 書けるようになったら、書けていない分を送り直す
+  }
   return res;
 }
 
-// 変更は「何をしたいか」だけ送る。data を直接いじらないので、丸ごと置換だった頃の
-// ように応答待ちの間の編集が古い内容で上書きされることがない。
-// 失敗(容量不足・権限エラー等)は黙殺せず通知する。
-const mutate = action => window.api.mutate(action).then(settle, () => { toast(SAVE_FAILED); return null; });
-
-// まだ書けたと確認できていない記録(action → 送信中か)。セッションの状態は送った
-// 直後に消えるので、ここで持っておかないと記録はどこにも残らない(丸ごと置換だった
-// 頃は手元の data に残り、次の保存で一緒に書かれていた)。送る前に積み、成功の応答で
-// 外す。失敗の応答を待つ間に終了しても、終了時の同期送信で拾える。
-// 次に保存が通ったときと終了時に送り直す。session/add は同じ id を二重に積まない
-// ので、送り直しが重なっても増えない。
-const unsavedSessions = new Map();
-function sendSession(action) {
-  unsavedSessions.set(action, true);
-  return mutate(action).then(res => {
-    if (failed(res)) unsavedSessions.set(action, false);
-    else unsavedSessions.delete(action);
-    return res;
-  });
+function retryDurable() {
+  for (const p of pending.filter(p => p.failed && !p.inFlight)) {
+    p.failed = false;
+    // main ではこれから適用されるので、見込みでも最後に並べ直す。
+    pending.splice(pending.indexOf(p), 1);
+    pending.push(p);
+    send(p);
+  }
 }
 
-// タイマーの進行状態(フェーズとサイクル)も同じ。flow/set が書けないと、正本は
-// 古いままなのに手元のタイマーは進んでおり、ほかの意図はそれぞれの差分しか運ばない
-// ので、次の遷移まで二度と書かれない(その前に終了すると違うフェーズで再開する)。
-// 常に手元の最新値を送るので、未保存かどうかだけ持てばよい。
-let flowUnsaved = false, flowInFlight = 0;
-function persistFlow() {
-  flowUnsaved = true;
-  flowInFlight++;
-  mutate({ type: 'flow/set', mode: timer.mode, cycle: timer.cycle }).then(res => {
-    flowInFlight--;
-    // 送信中に別の遷移が送られていれば、その応答に任せる(古い応答で済んだことにしない)。
-    if (!failed(res) && flowInFlight === 0) flowUnsaved = false;
-  });
+// 他のウィンドウの変更で正本が動いたとき。
+function applySnapshot(snapshot) {
+  if (!snapshot) return;
+  committed = snapshot;
+  project();
 }
-
-function retryUnsaved() {
-  for (const [action, inFlight] of unsavedSessions) if (!inFlight) sendSession(action);
-  if (flowUnsaved && flowInFlight === 0) persistFlow();
-}
-
-// フォーカス対象だけは応答を待たずに覚えておく。表示の遅れは往復のぶん(ミリ秒)で
-// 済むが、選んだ直後に開始されると計測の付け先が空のままセッションが始まり、
-// その時間の帰属はあとから直せない。正本が返れば同じ値になり、保存に失敗したときは
-// 正本の値に戻る。
-let pendingTaskId;                  // undefined = 選択の要求は出ていない
-const focusTaskId = () => (pendingTaskId !== undefined ? pendingTaskId : data.selectedTaskId) || null;
 
 const MODE_LABEL = { work: 'フォーカス', short: '小休憩', long: '長休憩' };
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
@@ -107,28 +124,8 @@ const sessionIntervals = s => (Array.isArray(s.intervals) ? s.intervals : [{ sta
 // Date → "HH:MM"
 const fmtClock = d => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
-// 応答待ちの設定の差分(送った順)。設定を閉じてすぐ開始されたとき、正本はまだ
-// 古い値なので、それで長さを決めると変えたはずの設定が効かない(応答のあとでは
-// 実行中のタイマーは直せない)。読むときは正本に要求中の差分を重ねた値を使う。
-const pendingSettings = [];
-function settings() {
-  let cur = data.settings;
-  for (const { patch } of pendingSettings) {
-    cur = { ...cur, ...patch, whiteNoise: { ...cur.whiteNoise, ...(patch.whiteNoise || {}) } };
-  }
-  return cur;
-}
-function mutateSettings(patch) {
-  const entry = { patch };
-  pendingSettings.push(entry);
-  return mutate({ type: 'settings/update', patch }).then(res => {
-    pendingSettings.splice(pendingSettings.indexOf(entry), 1);
-    return res;
-  });
-}
-
 function modeDurationMs(mode) {
-  const s = settings();
+  const s = data.settings;
   const min = mode === 'work' ? s.workMin : mode === 'short' ? s.shortMin : s.longMin;
   return min * 60 * 1000;
 }
@@ -155,7 +152,7 @@ async function init() {
   window.api.onDataSnapshot(applySnapshot);
 
   // 検証は main の責務。ここへ来るのは正規化済みのスナップショットだけ。
-  data = await window.api.loadData();
+  committed = data = await window.api.loadData();
   // モード手動選択を撤去したので、自動サイクルの進行(次フェーズ・長休憩までの
   // カウント)を再起動後も維持する。
   timer.mode = data.timer.mode;
@@ -200,11 +197,8 @@ function renderTasks() {
   // 名前を編集している間は組み直さない。意図の反映は全体の再描画で来るので、
   // 守らないと編集中に別の変更(セッションの記録など)が入っただけで入力が消える。
   if ($('.task-rename')) return;
-  // 削除の応答待ちのタスクは描かない(行が残っていると、完了や名前の変更が削除の
-  // あとに並んで消えたタスクに当たり、取り消しでも戻らない)。
-  const shown = data.tasks.filter(t => !pendingDeletes.has(t.id));
-  const open = shown.filter(t => !t.completed);
-  const done = shown.filter(t => t.completed);
+  const open = data.tasks.filter(t => !t.completed);
+  const done = data.tasks.filter(t => t.completed);
   const list = $('#taskList');
   const doneList = $('#doneList');
   list.textContent = '';
@@ -433,8 +427,14 @@ function closeSegment() {
   const c = timer.current;
   if (!c) return;
   const durMs = pomoElapsedMs() - c.segStartMs;
-  if (durMs >= 1000) c.segments.push({ taskId: c.segTaskId, durationSec: Math.round(durMs / 1000), focusSeq: c.segFocusSeq });
+  if (durMs >= 1000) c.segments.push({ taskId: c.segTaskId, durationSec: Math.round(durMs / 1000), seq: c.segSeq });
 }
+
+// 見込みの付け先が、応答待ちのどの意図までを前提にしているか(最後の意図の seq)。
+// その意図が決着したら、印の付いた内訳を決着後の正本の選択に付け直す。選択が
+// 失敗したり、応答待ちの間の完了・削除で正規化に外されたりしても、その間の
+// 実働が選べなかったタスクに残らない。
+const lastPendingSeq = () => (pending.length ? pending[pending.length - 1].seq : undefined);
 
 // タスク切り替え地点でセグメントを区切る(タイマーは止めない)
 function switchSegment(taskId) {
@@ -443,158 +443,62 @@ function switchSegment(taskId) {
   closeSegment();
   c.segTaskId = taskId || null;
   c.segStartMs = pomoElapsedMs();
-  c.segFocusSeq = undefined;        // 要求中の値で付けたなら mutateFocus が印を付ける
+  c.segSeq = lastPendingSeq();
 }
 
-// フォーカス対象を変える意図を送る(選択だけでなく、選択中のタスクの完了・削除も
-// フォーカスを外す)。応答までの間も focusTaskId() は要求後の値を返すので、その隙に
-// 開始されたセッションが外れるはずのタスクに付かない。
-// 要求ごとに番号を振る。A を選んで応答を待つ間に B を選んだとき、先に返った A の
-// 応答で B の保留を消すと、その隙に始めたセッションが A に付いてしまう。
-let focusSeq = 0;
-// まだ決着していないフォーカスの要求の番号。その値で付けた内訳には番号の印が付く
-// (segFocusSeq / segments[].focusSeq)。要求が失敗したり正規化で外れたりしたら、
-// 決着後の正本の選択に付け直す。応答待ちの間に終わったセッションの記録も、
-// 印の付いた内訳が決着するまで送らずに待つ(送ってしまうと後から直せない)。
-const unsettledFocus = new Set();
-function mutateFocus(taskId, action) {
-  const seq = ++focusSeq;
-  pendingTaskId = taskId || null;
-  unsettledFocus.add(seq);
-  const c = timer.current;
-  if (c && c.mode === 'work' && c.segTaskId === pendingTaskId) c.segFocusSeq = seq;
-  return mutate(action).then(res => {
-    if (seq === focusSeq) pendingTaskId = undefined;   // 最後の要求が決着したときだけ外す
-    unsettledFocus.delete(seq);
-    settleFocusSegments(seq, res && res.snapshot ? res.snapshot.selectedTaskId : data.selectedTaskId);
-    // 実行中の付け先を正本のフォーカスに合わせる。要求どおりになるとは限らない:
-    // 保存に失敗すれば元の選択に戻り、成功しても、応答待ちの間にそのタスクが
-    // 完了・削除されていれば正規化で選択は外れる。合わせないと、正本の選択とは
-    // 別のタスクに以降の実働が付き、次の保存でその帰属が確定してしまう。
-    // 応答待ちの間に始まったセッションもここで拾う。後の要求がまだ保留中なら
-    // focusTaskId() はその値なので、付け先は動かない。
-    switchSegment(focusTaskId());
-    return res;
-  });
-}
-const failed = res => !res || res.ok === false;
-
-// 要求 seq の値で付けた内訳を、決着後の正本の選択(actual)に付け直す。要求どおりなら
-// 何も変わらない。実行中セッションの開いている区間も、終わって送信待ちの記録も対象。
-function settleFocusSegments(seq, actual) {
+function settleSegments(seqDone, actual) {
   const fix = c => {
-    for (const s of c.segments) if (s.focusSeq === seq) { s.taskId = actual || null; s.focusSeq = undefined; }
-    if (c.segFocusSeq === seq) { c.segTaskId = actual || null; c.segFocusSeq = undefined; }
+    for (const s of c.segments) if (s.seq === seqDone) { s.taskId = actual || null; s.seq = undefined; }
+    if (c.segSeq === seqDone) { c.segTaskId = actual || null; c.segSeq = undefined; }
   };
   if (timer.current) fix(timer.current);
   for (const r of heldRecords) fix(r.c);
-  flushHeldRecords();
 }
 
-// 完了状態の要求中の値(id → { completed, seq })。応答までの間は行がまだ未完了の
-// まま描かれているので、完了を送ったタスクの行を押すと、main では正規化で外れる
-// 選択がレンダラでは付け先になり、応答前にセッションが終わればその帰属が残る。
-const pendingDone = new Map();
-let doneSeq = 0;
-const isDone = t => (pendingDone.has(t.id) ? pendingDone.get(t.id).completed : t.completed);
-
-// フォーカス対象タスクの選択(アイドル中=次のポモドーロ用、実行中=即時切り替え)
+// フォーカス対象タスクの選択(アイドル中=次のポモドーロ用、実行中=即時切り替え)。
+// 完了したタスクは選べない(main でも正規化で外れる)。
 function selectTask(taskId) {
-  // 完了した(または完了を送った)タスクは選べない。main でも正規化で外れる。
   const t = taskId && data.tasks.find(t => t.id === taskId);
-  if (t && (isDone(t) || pendingDeletes.has(t.id))) return;
-  switchSegment(taskId);            // 実行中セッションの内訳はレンダラ側の状態
-  return mutateFocus(taskId, { type: 'task/select', id: taskId });
+  if (taskId && (!t || t.completed)) return;
+  return mutate({ type: 'task/select', id: taskId || null });
 }
 
-// completed は操作した部品の状態から受け取る。最後に確定した正本を反転すると、
-// 応答が届く前に二度切り替えたとき両方が「完了」を送り、画面と保存がずれる。
+// completed は操作した部品の状態から受け取る(省略時は見込みを反転)。
+// 完了したら選択は外れる(reducer が外し、見込みの付け先もそれに従う)。
 function toggleTaskDone(id, completed) {
   const t = data.tasks.find(t => t.id === id);
-  if (!t || pendingDeletes.has(id)) return;   // 削除の応答待ちのタスクには重ねない
-  if (completed === undefined) completed = !isDone(t);
-  const action = { type: 'task/setDone', id, completed, at: completed ? new Date().toISOString() : null };
-  const seq = ++doneSeq;
-  pendingDone.set(id, { completed, seq });
-  const settled = () => { if (pendingDone.has(id) && pendingDone.get(id).seq === seq) pendingDone.delete(id); };
-  // 完了したら選択解除(完了までの時間はセグメントとして記録済み)
-  if (!(completed && focusTaskId() === id)) { mutate(action).then(settled); return; }
-  switchSegment(null);
-  toast(`「${t.title}」を完了しました 🎉`);
-  // 保存できなければ正本ではまだ選択中で未完了のまま。付け先は mutateFocus が戻す。
-  mutateFocus(null, action).then(settled);
+  if (!t) return;
+  if (completed === undefined) completed = !t.completed;
+  if (completed && focusTaskId() === id) toast(`「${t.title}」を完了しました 🎉`);
+  mutate({ type: 'task/setDone', id, completed, at: completed ? new Date().toISOString() : null });
 }
 
-// 応答待ちの削除(id)。行は応答まで残って見えるので、二度押すと二回送られ、
-// 取り消しの控えが付くのは一回目の応答だけになる(後から出たトーストの取り消しが効かない)。
-const pendingDeletes = new Set();
-// 取り消せる削除(id → 控えに足す内訳の位置)。削除のあと取り消すまでに終わった
-// 記録は、送った時点で削除済みのタスクを指す内訳が session/add で外れる。控えは
-// 削除の時点で作ったのでそれを知らない。記録を組むときに位置を足しておき、
-// 取り消しで一緒に付け直す。
-const undoablePatches = new Map();
-
+// 削除は見込みからすぐ消える(行も残らないので、応答待ちの間に重ねて操作されない)。
+// 実行中セッションの内訳は削除済みのタスクを指したまま持ち、記録が届いた時点で
+// main の session/add が外す。そのとき外した位置は main が取り消しの控えに足すので、
+// 取り消せばその記録も戻る。
 function deleteTask(id) {
-  const t = data.tasks.find(t => t.id === id);
-  if (!t || pendingDeletes.has(id)) return;
-  pendingDeletes.add(id);
-  // まだ書けていない記録(送り直し待ち)も、削除のあとに届けば session/add で参照が
-  // 外れる。main の控えには入らないので、ここで位置を控えに足しておく。
-  const queued = [];
-  for (const action of unsavedSessions.keys()) {
-    const indexes = [];
-    (action.session.taskTimes || []).forEach((tt, i) => { if (tt.taskId === id) indexes.push(i); });
-    if (indexes.length) queued.push({ sessionId: action.session.id, indexes });
-  }
-  undoablePatches.set(id, queued);
-  renderAll();                      // 応答まで行を隠す(残すと二度目の操作を受けてしまう)
+  const index = data.tasks.findIndex(t => t.id === id);
+  if (index === -1) return;
+  const t = data.tasks[index];
   const wasSelected = focusTaskId() === id;
-  // 実行中セッションの内訳はここでは匿名化しない。応答前に匿名化すると、その間に
-  // セッションが終わったとき、記録は匿名のまま送られ(タスク別に合算済みなので
-  // 後から切り分けられない)、削除が失敗してタスクが残っても帰属は戻らない。
-  // 削除されたタスクへの参照は、記録が届いた時点で session/add が外す(main は
-  // 意図を受け取った順に適用するので、削除が通っていれば必ず外れる)。
-  // 付け先だけは今外す(フォーカスの要求と揃える。失敗なら mutateFocus が戻す)。
-  if (timer.current && timer.current.segTaskId === id) switchSegment(null);
-  const action = { type: 'task/delete', id };
-  (wasSelected ? mutateFocus(null, action) : mutate(action)).then(res => {
-    pendingDeletes.delete(id);
-    if (failed(res)) {
-      undoablePatches.delete(id);   // 削除されていなければ取り消すものも無い
-      renderAll();                  // 隠していた行を戻す(応答の描画は隠したまま済んでいる)
-    }
-  });
+  mutate({ type: 'task/delete', id });
   // 取り消しは削除の応答を待たずにその場で送る。控えは main が削除の直前の正本から
   // 作って持っており、main は受け取った順に適用するので必ず削除のあとに当たる
-  // (削除が失敗していれば何もしない)。待つと、その間にレンダラが閉じたとき
-  // 取り消しが失われ、受け付けたはずの取り消しが効かない。
-  // 取り消しの状態(控えに足す位置)は、戻せたと分かるまで手放さない。保存に失敗
-  // したら(main も控えを持ったまま)、取り消しをもう一度出す。
+  // (削除が失敗していれば何もしない)。見込みには手元の控えで近似を当てる。
+  // 保存に失敗したら(main は控えを持ったまま)、取り消しをもう一度出す。
   let undoing = false;
   const offer = msg => toast(msg, { label: '元に戻す', fn: undo });
   const undo = () => {
     if (undoing) return;
     undoing = true;
-    restoreTask(id, undoablePatches.get(id) || [], wasSelected && !isDone(t)).then(res => {
+    const local = { type: 'task/restore', task: t, index, patches: [], select: wasSelected && !t.completed };
+    mutate({ type: 'task/undelete', id }, { local }).then(res => {
       undoing = false;
-      if (!failed(res)) { undoablePatches.delete(id); return; }
-      offer(`「${t.title}」を元に戻せませんでした`);
+      if (failed(res)) offer(`「${t.title}」を元に戻せませんでした`);
     });
   };
   offer(`「${t.title}」を削除しました`);
-}
-
-// 選択も戻るかは main が控え(削除直前の正本)で決める。応答までの間は、削除した
-// ときのフォーカスから見込みで扱う。見込みどおり戻るなら、その間の実働(や間に
-// 始めたセッション)も匿名にならない。外れていても、付け先は決着後に正本の
-// フォーカスへ合わせる(mutateFocus はいつも合わせる)。
-function restoreTask(id, patches, likelySelected) {
-  const action = { type: 'task/undelete', id, patches };
-  if (likelySelected) {
-    switchSegment(id);
-    return mutateFocus(id, action);
-  }
-  return mutate(action).then(res => { switchSegment(focusTaskId()); return res; });
 }
 
 /* ============ タイマー ============ */
@@ -638,7 +542,7 @@ function renderTimer() {
 function renderCycleDots() {
   const wrap = $('#cycleDots');
   wrap.textContent = '';
-  const every = settings().longEvery;
+  const every = data.settings.longEvery;
   // 長休憩の「間」だけ全点灯にする。長休憩が終わって次のフォーカスへ戻ると
   // cycle は every の倍数のままなので、mode を条件に含めないと次サイクル開始時も
   // 4/4 のまま表示されてしまう(長休憩後は 0/4 が自然)。
@@ -675,8 +579,7 @@ function startPauseResume() {
       intStartAt: Date.now(),
       segments: [],
       segTaskId: timer.mode === 'work' ? focusTaskId() : null,
-      // 要求中のフォーカスで付けたなら、その要求の番号を印として持つ
-      segFocusSeq: timer.mode === 'work' && pendingTaskId !== undefined ? focusSeq : undefined,
+      segSeq: timer.mode === 'work' ? lastPendingSeq() : undefined,   // 見込みで付けたなら印を持つ
       segStartMs: 0
     };
     timer.lastTickAt = Date.now();
@@ -746,22 +649,26 @@ function recordSession(completed, sync) {
 
   if (c.mode === 'work') closeSegment();
   const rec = { c, completed, elapsedSec, endedAt: c.intervals.length ? c.intervals[c.intervals.length - 1].endedAt : new Date().toISOString() };
-  // 決着していないフォーカスの要求で付けた内訳があれば、決着まで送らずに持つ。
-  // 終了時(sync)は待てないので、その時点の付け先のまま送る。
+  // 見込みで付けた内訳がまだ決着していなければ、決着まで送らずに持つ(送ってから
+  // では直せない)。終了時(sync)は待てないので、その時点の付け先のまま送る。
   if (sync) window.api.mutateSync(sessionAction(rec));
-  else if (c.segments.some(s => unsettledFocus.has(s.focusSeq))) heldRecords.push(rec);
-  else sendSession(sessionAction(rec));
+  else if (isHeld(rec)) heldRecords.push(rec);
+  else sendSession(rec);
 }
 
-// フォーカスの要求の決着待ちで送っていない記録。
 const heldRecords = [];
+const isHeld = rec => rec.c.segments.some(s => unsettled.has(s.seq));
 function flushHeldRecords() {
-  for (let i = heldRecords.length - 1; i >= 0; i--) {
-    const rec = heldRecords[i];
-    if (rec.c.segments.some(s => unsettledFocus.has(s.focusSeq))) continue;
-    heldRecords.splice(i, 1);
-    sendSession(sessionAction(rec));
+  for (const rec of heldRecords.filter(r => !isHeld(r))) {
+    heldRecords.splice(heldRecords.indexOf(rec), 1);
+    sendSession(rec);
   }
+}
+const sendSession = rec => mutate(sessionAction(rec), { durable: 'session:' + rec.c.id });
+
+// 自動サイクルの進行(フェーズとサイクル)。常に手元の最新値を送る。
+function persistFlow() {
+  mutate({ type: 'flow/set', mode: timer.mode, cycle: timer.cycle }, { durable: 'flow' });
 }
 
 function sessionAction({ c, completed, elapsedSec, endedAt }) {
@@ -772,11 +679,6 @@ function sessionAction({ c, completed, elapsedSec, endedAt }) {
     for (const s of c.segments) byTask.set(s.taskId, (byTask.get(s.taskId) || 0) + s.durationSec);
     taskTimes = [...byTask.entries()].map(([taskId, durationSec]) => ({ taskId, durationSec }));
     taskIds = taskTimes.filter(tt => tt.taskId).map(tt => tt.taskId);
-    // 取り消せる削除のタスクを指す内訳は、main で外れても取り消しで戻せるよう位置を控える。
-    taskTimes.forEach((tt, i) => {
-      const extra = tt.taskId && undoablePatches.get(tt.taskId);
-      if (extra) extra.push({ sessionId: c.id, indexes: [i] });
-    });
   }
   return {
     type: 'session/add',
@@ -811,7 +713,7 @@ function finishSession(completed) {
     notify(wasWork ? 'フォーカス完了!' : '休憩終了!',
            wasWork ? 'おつかれさまです。休憩しましょう。' : '次のフォーカスを始めましょう。');
     timer.mode = wasWork
-      ? (timer.cycle % settings().longEvery === 0 ? 'long' : 'short')
+      ? (timer.cycle % data.settings.longEvery === 0 ? 'long' : 'short')
       : 'work';
   }
 
@@ -823,7 +725,7 @@ function finishSession(completed) {
 
   // 自動開始(設定で有効な場合)
   if (completed) {
-    const s = settings();
+    const s = data.settings;
     if ((timer.mode !== 'work' && s.autoStartBreak) || (timer.mode === 'work' && s.autoStartWork)) {
       setTimeout(() => { if (timer.status === 'idle') startPauseResume(); }, 800);
     }
@@ -876,7 +778,7 @@ function chime() {
 function renderFocusTask() {
   const wrap = $('#focusTask');
   wrap.textContent = '';
-  const t = data.tasks.find(t => t.id === data.selectedTaskId && !pendingDeletes.has(t.id));
+  const t = data.tasks.find(t => t.id === data.selectedTaskId);
 
   if (t) {
     const card = document.createElement('div');
@@ -915,21 +817,18 @@ function renderFocusTask() {
     let items = [];
     let active = 0;
 
-    // 選んだら応答まで欄を止める。欄は正本が返って描き直されるまで残るので、
-    // そのままだと二度目の Enter やクリックで同じタスクをもう一つ作ってしまう。
-    // 何も送らなかったときや、描き直されずに残ったときは戻す。
+    // 選ぶと見込みが描き直されて欄は消える。消えた欄に残った二度目の確定は無視する
+    // (同じタスクをもう一つ作らない)。
     const choose = it => {
-      if (input.disabled) return;
-      input.disabled = true;
-      list.hidden = true;
-      const sent = it.type === 'task' ? selectTask(it.task.id) : selectTask(addTask(it.title).id);
-      Promise.resolve(sent).then(() => { if (form.isConnected) input.disabled = false; });
+      if (!form.isConnected) return;
+      if (it.type === 'task') selectTask(it.task.id);
+      else selectTask(addTask(it.title).id);
     };
 
     const buildItems = () => {
       const q = input.value.trim();
       const ql = q.toLowerCase();
-      const open = data.tasks.filter(t => !t.completed && !pendingDeletes.has(t.id));
+      const open = data.tasks.filter(t => !t.completed);
       const matches = (ql ? open.filter(t => t.title.toLowerCase().includes(ql)) : open).slice(0, 5);
       items = matches.map(t => ({ type: 'task', task: t }));
       if (q && !open.some(t => t.title.toLowerCase() === ql)) items.push({ type: 'create', title: q });
@@ -1074,12 +973,12 @@ async function startNoise(name, volume) {
 
 // 現在のモードで鳴らす音源ファイル名(work=フォーカス音源, 休憩=休憩音源)
 function noiseFileFor(mode) {
-  const wn = settings().whiteNoise;
+  const wn = data.settings.whiteNoise;
   return mode === 'work' ? wn.file : wn.breakFile;
 }
 
 function updateNoise() {
-  const wn = settings().whiteNoise;
+  const wn = data.settings.whiteNoise;
   const sound = soundsCache.find(s => s.name === noiseFileFor(timer.mode));
   const active = timer.status === 'running' && sound;
   const shouldPlay = active && wn.enabled;
@@ -1102,7 +1001,7 @@ function updateNoise() {
 
 /* ============ 設定 ============ */
 async function openSettings() {
-  const s = settings();
+  const s = data.settings;
   $('#setWork').value = s.workMin;
   $('#setShort').value = s.shortMin;
   $('#setLong').value = s.longMin;
@@ -1156,7 +1055,7 @@ async function saveSettings() {
     const v = parseInt($(sel).value, 10);
     return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
   };
-  const s = settings();
+  const s = data.settings;
   const patch = {
     workMin: num('#setWork', 1, 120, s.workMin),
     shortMin: num('#setShort', 1, 60, s.shortMin),
@@ -1172,7 +1071,7 @@ async function saveSettings() {
     }
   };
   $('#settingsModal').hidden = true;
-  const sent = mutateSettings(patch);
+  const sent = mutate({ type: 'settings/update', patch });
   // 待機中の表示とノイズは要求中の値ですぐ合わせる(閉じてすぐ開始しても新しい長さで始まる)。
   const resync = () => {
     if (timer.status === 'idle') {
@@ -1465,8 +1364,10 @@ $('#previewBreakBtn').addEventListener('click', () => previewSound('#setNoiseBre
 // 応答待ちの間の切り替えは、最後に確定した正本ではなく要求中の値から反転する
 // (正本を反転すると、応答前の二度押しが同じ値を二回送って一回分に潰れる)。
 $('#noiseIndicator').addEventListener('click', () => {
-  const enabled = !settings().whiteNoise.enabled;
-  mutateSettings({ whiteNoise: { enabled } }).then(() => updateNoise());
+  const enabled = !data.settings.whiteNoise.enabled;
+  const sent = mutate({ type: 'settings/update', patch: { whiteNoise: { enabled } } });
+  updateNoise();
+  sent.then(() => updateNoise());
 });
 
 // Space: 開始/一時停止、Esc: モーダル・メニューを閉じる
@@ -1547,11 +1448,10 @@ document.querySelectorAll('.modal-backdrop').forEach(m => {
 // 残るのはこの打ち切り記録だけで、終了(Tray「終了」/Cmd+Q)でレンダラが破棄される
 // 前に書き終えるため同期 IPC でブロッキングする。
 window.addEventListener('beforeunload', () => {
-  // 送信中のものも含めて送る(失敗の応答はもう受け取れない。重複は main が弾く)。
-  for (const action of unsavedSessions.keys()) window.api.mutateSync(action);
-  unsavedSessions.clear();
+  // 書けたと確認できていない記録と進行状態を、送信中のものも含めて送る(失敗の
+  // 応答はもう受け取れない。記録の重複は main が弾き、進行状態は最新値で上書き)。
+  for (const p of pending) if (p.durable) window.api.mutateSync(p.action);
   for (const rec of heldRecords.splice(0)) window.api.mutateSync(sessionAction(rec));
-  if (flowUnsaved) window.api.mutateSync({ type: 'flow/set', mode: timer.mode, cycle: timer.cycle });
   if (timer.current) recordSession(false, true);
 });
 

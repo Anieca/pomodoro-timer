@@ -266,10 +266,11 @@ const failNextWrite = app => app.evaluate(() => {
   await page.waitForTimeout(200);
   await slowWrites(app, 400);
   // 正本を反転して送ると、二度とも同じ(未完了の)正本を見て「完了」を二回送ってしまう。
+  // 一度目で行は完了側へ描き直されるので、二度目はそのとき見えているチェックを押す。
   await page.evaluate(() => {
-    const check = document.querySelector('#taskList .task-check');
-    check.click();
-    check.click();
+    const check = () => [...document.querySelectorAll('.task-item')].find(li => li.textContent.includes('切り替えるタスク')).querySelector('.task-check');
+    check().click();
+    check().click();
   });
   await page.waitForTimeout(1500);
   const saved = readData(ud).tasks.find(t => t.id === 'u1');
@@ -296,8 +297,8 @@ const failNextWrite = app => app.evaluate(() => {
   const between = await page.evaluate(() => new Promise((resolve, reject) => {
     const seen = new Set();
     const iv = setInterval(() => {
-      if (data.selectedTaskId === 'va') seen.add(focusTaskId());
-      if (data.selectedTaskId === 'vb') { clearInterval(iv); resolve([...seen]); }
+      if (committed.selectedTaskId === 'va') seen.add(focusTaskId());
+      if (committed.selectedTaskId === 'vb') { clearInterval(iv); resolve([...seen]); }
     }, 10);
     setTimeout(() => { clearInterval(iv); reject(new Error('B の応答が届かない')); }, 5000);
     selectTask('va');
@@ -604,8 +605,9 @@ for (const fail of [false, true]) {
   await slowWrites(app, 2500);
   const pending = await page.evaluate(async () => {
     toggleTaskDone('ag2', true);
-    // 行は応答まで未完了のまま描かれている。
-    [...document.querySelectorAll('#taskList .task-item')].find(li => li.textContent.includes('完了するタスク')).click();
+    // 応答前にそのタスクを選ぼうとする(行は見込みで完了側へ移っているので、
+    // クリックと同じ経路を直接呼ぶ)。
+    selectTask('ag2');
     const r = { focus: focusTaskId(), seg: timer.current.segTaskId };
     await new Promise(r => setTimeout(r, 1200));   // 内訳に積まれる長さ(1 秒以上)にする
     finishSession(true);                    // 応答前に記録を送る

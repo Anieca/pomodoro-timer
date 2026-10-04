@@ -498,19 +498,37 @@ function commit(action, senderWc) {
       type: 'task/restore',
       task: u.task,
       index: u.index,
-      // 削除のあと取り消すまでに届いた記録の位置は、レンダラが添えてくる。
-      patches: u.patches.concat(Array.isArray(action.patches) ? action.patches : []),
+      // 削除のあと取り消すまでに届いた記録の位置も含む(strippedForUndo が足す)。
+      patches: u.patches,
       select: u.selected && !u.task.completed
     }), senderWc);
     deletions.delete(action.id);
     return preserved;
   }
   const undo = action && action.type === 'task/delete' ? deletionUndo(store, action.id) : null;
+  const stripped = action && action.type === 'session/add' ? strippedForUndo(action.session) : [];
   const next = applyAction(store, action);
   if (!next) throw new Error('未知の操作です: ' + String((action && action.type) || action));
   const preserved = writeData(next, senderWc);
   if (undo) deletions.set(action.id, undo);
+  for (const { id, patch } of stripped) deletions.get(id).patches.push(patch);
   return preserved;
+}
+
+// 取り消せる削除のタスクを指す記録が届くと、session/add はその内訳を外す(位置は
+// 残る)。削除のあとに終わったセッションは削除時の控えに入っていないので、外す位置を
+// 控えに足しておき、取り消しで一緒に付け直す。
+function strippedForUndo(session) {
+  const s = session && typeof session === 'object' ? session : {};
+  if (!Array.isArray(s.taskTimes) || store.sessions.some(x => x.id === s.id)) return [];
+  const out = [];
+  for (const id of deletions.keys()) {
+    if (store.tasks.some(t => t.id === id)) continue;
+    const indexes = [];
+    s.taskTimes.forEach((tt, i) => { if (tt && tt.taskId === id) indexes.push(i); });
+    if (indexes.length) out.push({ id, patch: { sessionId: s.id, indexes } });
+  }
+  return out;
 }
 
 // 応答には必ず正本を添える。成功なら適用結果、失敗なら適用前の内容が入るので、

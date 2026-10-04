@@ -63,10 +63,12 @@ scripts/           音源生成・スモークテスト用スクリプト
 ```
 
 保存データの正本を持つのはメインプロセスで、レンダラーは「何をしたいか」（意図）
-だけを送り、返ってきたスナップショットを描画します。意図の適用は `shared/actions.js`、
-検証と正規化は `shared/schema.js` に集約してあり、どちらも Electron に依存しないので
-`npm test` の単体テスト（`scripts/actions-test.mjs` / `scripts/schema-test.mjs`）だけで
-確かめられます。
+だけを送ります。画面に出すのは、最後に受け取った正本に応答待ちの意図を同じ reducer で
+当てた見込みで、応答が来るたびに正本を差し替えて当て直します（失敗した意図は外れて
+正本に戻る）。意図の適用は `shared/actions.js`、検証と正規化は `shared/schema.js` に
+集約してあり、main とレンダラーの両方が同じものを使います。どちらも Electron に
+依存しないので、`npm test` の単体テスト（`scripts/actions-test.mjs` /
+`scripts/schema-test.mjs`）だけで確かめられます。
 
 ## ライセンス
 

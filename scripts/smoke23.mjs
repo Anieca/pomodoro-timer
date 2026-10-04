@@ -14,6 +14,10 @@ import * as os from 'node:os';
 //  U) 応答前に完了を二度切り替えても、最後の操作どおりに保存される
 //  V) 選択を続けて変えたとき、先の応答で後の選択の保留を消さない
 //  W) 完了の保存に失敗したら、区切った実働の付け先を元に戻す
+//  X) 選択中のタスクの完了・削除の応答待ちに開始しても、そのタスクに付かない
+//  Y) 削除の保存に失敗したら、匿名化した内訳と付け先を戻す
+//  Z) 元に戻すの保存に失敗したら、内訳を削除済みのタスクに付け直さない
+//  AA) 応答前に二度押したノイズの切り替えは元に戻る
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -284,6 +288,115 @@ const failNextWrite = app => app.evaluate(() => {
   assert(after.selected === 'w1' && after.completed === false, 'W: 正本では選択中・未完了のまま');
   assert(after.seg === 'w1', 'W: 実働の付け先も元のタスクに戻る');
   await page.evaluate(() => clearInterval(timer.intervalId));
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== X: 完了・削除の応答待ちに開始したセッションは外れるタスクに付かない ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(async ts => {
+    for (const t of ts) await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: 'x1' });
+  }, [task('x1', '完了するタスク'), task('x2', '削除するタスク')]);
+  await slowWrites(app, 400);
+  // アイドル中は区切る対象のセッションがない。応答前に開始すると、選択が残って見える。
+  const afterDone = await page.evaluate(async () => {
+    toggleTaskDone('x1', true);
+    startPauseResume();
+    const seg = timer.current.segTaskId;
+    stopEarly();
+    await new Promise(r => setTimeout(r, 1500));
+    await mutate({ type: 'task/select', id: 'x2' });
+    return seg;
+  });
+  const afterDelete = await page.evaluate(async () => {
+    deleteTask('x2');
+    startPauseResume();
+    const seg = timer.current.segTaskId;
+    stopEarly();
+    await new Promise(r => setTimeout(r, 1500));
+    return seg;
+  });
+  console.log('X: seg after complete=', afterDone, 'after delete=', afterDelete, 'errors=', errors);
+  assert(errors.length === 0, 'X: コンソール/ページエラーが出ない');
+  assert(afterDone === null, 'X: 完了の応答待ちに開始しても完了するタスクに付かない');
+  assert(afterDelete === null, 'X: 削除の応答待ちに開始しても削除するタスクに付かない');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== Y: 削除の保存に失敗したら内訳と付け先を戻す ===== */
+{
+  const ud = mkdir();
+  const { app, page } = await launch(ud);
+  await page.evaluate(async t => {
+    await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: t.id });
+    startPauseResume();
+  }, task('y1', '消せないタスク'));
+  await page.waitForTimeout(1200);           // 1 秒以上の区間でないと内訳に積まれない
+  await failNextWrite(app);
+  const after = await page.evaluate(async () => {
+    deleteTask('y1');
+    await new Promise(r => setTimeout(r, 500));
+    return { seg: timer.current.segTaskId, segs: timer.current.segments.map(s => s.taskId),
+             kept: data.tasks.some(t => t.id === 'y1'), selected: data.selectedTaskId };
+  });
+  console.log('Y: after failed delete=', JSON.stringify(after));
+  assert(after.kept && after.selected === 'y1', 'Y: 正本ではタスクも選択も残っている');
+  assert(after.seg === 'y1', 'Y: 実働の付け先も元のタスクに戻る');
+  assert(after.segs.length > 0 && after.segs.every(id => id === 'y1'), 'Y: 匿名化した内訳も元のタスクに戻る');
+  await page.evaluate(() => clearInterval(timer.intervalId));
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== Z: 元に戻すの保存に失敗したら内訳を付け直さない ===== */
+{
+  const ud = mkdir();
+  const { app, page } = await launch(ud);
+  await page.evaluate(async t => {
+    await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: t.id });
+    startPauseResume();
+  }, task('z1', '消したタスク'));
+  await page.waitForTimeout(1200);
+  await page.evaluate(() => deleteTask('z1'));
+  await page.waitForTimeout(300);
+  await failNextWrite(app);
+  const after = await page.evaluate(async () => {
+    document.querySelector('#toast .toast-action').click();
+    await new Promise(r => setTimeout(r, 500));
+    return { segs: timer.current.segments.map(s => s.taskId), seg: timer.current.segTaskId,
+             kept: data.tasks.some(t => t.id === 'z1') };
+  });
+  console.log('Z: after failed restore=', JSON.stringify(after));
+  assert(!after.kept, 'Z: 正本ではタスクは削除されたまま');
+  assert(after.segs.length > 0 && after.segs.every(id => id === null), 'Z: 内訳は匿名化されたまま');
+  assert(after.seg === null, 'Z: 付け先も削除済みのタスクに戻らない');
+  await page.evaluate(() => clearInterval(timer.intervalId));
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AA: 応答前の二度押しでノイズは元に戻る ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  const before = await page.evaluate(() => data.settings.whiteNoise.enabled);
+  await slowWrites(app, 400);
+  await page.evaluate(() => {
+    document.querySelector('#noiseIndicator').click();
+    document.querySelector('#noiseIndicator').click();
+  });
+  await page.waitForTimeout(1500);
+  const onScreen = await page.evaluate(() => data.settings.whiteNoise.enabled);
+  const saved = readData(ud).settings.whiteNoise.enabled;
+  console.log('AA: before=', before, 'saved=', saved, 'onScreen=', onScreen, 'errors=', errors);
+  assert(errors.length === 0, 'AA: コンソール/ページエラーが出ない');
+  assert(saved === before && onScreen === before, 'AA: 二度切り替えたら元の設定に戻る');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

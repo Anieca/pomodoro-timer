@@ -382,17 +382,35 @@ function switchSegment(taskId) {
   c.segStartMs = pomoElapsedMs();
 }
 
-// フォーカス対象タスクの選択(アイドル中=次のポモドーロ用、実行中=即時切り替え)
-// 選択の要求ごとの番号。A を選んで応答を待つ間に B を選んだとき、先に返った A の
+// フォーカス対象を変える意図を送る(選択だけでなく、選択中のタスクの完了・削除も
+// フォーカスを外す)。応答までの間も focusTaskId() は要求後の値を返すので、その隙に
+// 開始されたセッションが外れるはずのタスクに付かない。
+// 要求ごとに番号を振る。A を選んで応答を待つ間に B を選んだとき、先に返った A の
 // 応答で B の保留を消すと、その隙に始めたセッションが A に付いてしまう。
-let selectSeq = 0;
-function selectTask(taskId) {
-  const seq = ++selectSeq;
+let focusSeq = 0;
+function mutateFocus(taskId, action) {
+  const seq = ++focusSeq;
   pendingTaskId = taskId || null;
-  switchSegment(taskId);            // 実行中セッションの内訳はレンダラ側の状態
-  mutate({ type: 'task/select', id: taskId }).then(() => {
-    if (seq === selectSeq) pendingTaskId = undefined;   // 最後の要求が決着したときだけ外す
+  return mutate(action).then(res => {
+    if (seq === focusSeq) pendingTaskId = undefined;   // 最後の要求が決着したときだけ外す
+    return res;
   });
+}
+const failed = res => !res || res.ok === false;
+
+// 保存に失敗してフォーカスが正本の値に戻ったとき、実行中の付け先をそれに合わせる。
+// 付け先を外したまま(null)にしておくと、正本では選択中なのに以降の実働が
+// 「タスクなし」に付き、次の保存でその帰属が確定してしまう。応答待ちの間に
+// 始まったセッションもここで拾う。
+function resyncSegment() {
+  const c = timer.current;
+  if (c && c.segTaskId === null) switchSegment(focusTaskId());
+}
+
+// フォーカス対象タスクの選択(アイドル中=次のポモドーロ用、実行中=即時切り替え)
+function selectTask(taskId) {
+  switchSegment(taskId);            // 実行中セッションの内訳はレンダラ側の状態
+  mutateFocus(taskId, { type: 'task/select', id: taskId });
 }
 
 // completed は操作した部品の状態から受け取る。最後に確定した正本を反転すると、
@@ -401,21 +419,13 @@ function toggleTaskDone(id, completed) {
   const t = data.tasks.find(t => t.id === id);
   if (!t) return;
   if (completed === undefined) completed = !t.completed;
+  const action = { type: 'task/setDone', id, completed, at: completed ? new Date().toISOString() : null };
   // 完了したら選択解除(完了までの時間はセグメントとして記録済み)
-  const session = timer.current;
-  const prevSeg = session ? session.segTaskId : null;
-  const unfocus = completed && focusTaskId() === id;
-  if (unfocus) {
-    switchSegment(null);
-    toast(`「${t.title}」を完了しました 🎉`);
-  }
-  mutate({ type: 'task/setDone', id, completed, at: completed ? new Date().toISOString() : null }).then(res => {
-    // 保存できなければ正本ではまだ選択中で未完了のまま。区切ったセグメントを戻さないと、
-    // 以降の実働が「タスクなし」に付き、次の保存でその帰属が確定してしまう。
-    // 別のタスクへ移ったあとや次のセッションには手を出さない。
-    const failed = !res || res.ok === false;
-    if (unfocus && failed && timer.current === session && session && session.segTaskId === null) switchSegment(prevSeg);
-  });
+  if (!(completed && focusTaskId() === id)) { mutate(action); return; }
+  switchSegment(null);
+  toast(`「${t.title}」を完了しました 🎉`);
+  // 保存できなければ正本ではまだ選択中で未完了のまま。付け先もそれに戻す。
+  mutateFocus(null, action).then(res => { if (failed(res)) resyncSegment(); });
 }
 
 function deleteTask(id) {
@@ -453,12 +463,21 @@ function deleteTask(id) {
       }
     }
   }
-  mutate({ type: 'task/delete', id });
+  const action = { type: 'task/delete', id };
+  const session = timer.current;
+  const sent = undo.wasSelected ? mutateFocus(null, action) : mutate(action);
+  sent.then(res => {
+    if (!failed(res)) return;
+    // 削除できなければタスクは正本に残っている。匿名化した内訳と付け先を戻す
+    // (次のセッションには手を出さない。付け先の再同期は応答待ちの間に始まったものも拾う)。
+    if (timer.current === session) for (const s of undo.segPatches) s.taskId = id;
+    resyncSegment();
+  });
   toast(`「${t.title}」を削除しました`, { label: '元に戻す', fn: () => restoreTask(undo) });
 }
 
 function restoreTask(u) {
-  for (const s of u.segPatches) s.taskId = u.task.id;   // 実行中セッションはレンダラ側の状態
+  const session = timer.current;
   mutate({
     type: 'task/restore',
     task: u.task,
@@ -466,8 +485,11 @@ function restoreTask(u) {
     patches: u.patches,
     select: u.wasSelected && !u.task.completed
   }).then(res => {
-    // 選択が戻ってから計測先を合わせる(戻せなかったときに動かすと実働の付け先がずれる)
-    if (res && res.ok !== false && u.wasSelected) switchSegment(focusTaskId());
+    // 正本に戻ってから実行中セッションの内訳と計測先を合わせる。戻せなかったときに
+    // 先に動かすと、削除されたままのタスクを指す内訳が次の保存で残ってしまう。
+    if (failed(res)) return;
+    if (timer.current === session) for (const s of u.segPatches) s.taskId = u.task.id;   // 実行中セッションはレンダラ側の状態
+    if (u.wasSelected) switchSegment(focusTaskId());
   });
 }
 
@@ -1293,9 +1315,17 @@ $('#stopBtn').addEventListener('click', stopEarly);
 $('#skipBtn').addEventListener('click', skipBreak);
 $('#previewBtn').addEventListener('click', () => previewSound('#setNoiseFile'));
 $('#previewBreakBtn').addEventListener('click', () => previewSound('#setNoiseBreakFile'));
+// 応答待ちの間の切り替えは、最後に確定した正本ではなく要求中の値から反転する
+// (正本を反転すると、応答前の二度押しが同じ値を二回送って一回分に潰れる)。
+let pendingNoise, noiseSeq = 0;
 $('#noiseIndicator').addEventListener('click', () => {
-  const enabled = !data.settings.whiteNoise.enabled;
-  mutate({ type: 'settings/update', patch: { whiteNoise: { enabled } } }).then(() => updateNoise());
+  const seq = ++noiseSeq;
+  const enabled = !(pendingNoise !== undefined ? pendingNoise : data.settings.whiteNoise.enabled);
+  pendingNoise = enabled;
+  mutate({ type: 'settings/update', patch: { whiteNoise: { enabled } } }).then(() => {
+    if (seq === noiseSeq) pendingNoise = undefined;
+    updateNoise();
+  });
 });
 
 // Space: 開始/一時停止、Esc: モーダル・メニューを閉じる

@@ -132,6 +132,8 @@ const base = () => ({
   eq(s3.taskTimes, [{ taskId: 't1', durationSec: 300 }, { taskId: null, durationSec: 600 }], 'session/add: 外した内訳は「タスクなし」に合算する');
   const known = { id: 's4', mode: 'work', taskIds: ['t1'], taskTimes: [{ taskId: 't1', durationSec: 60 }] };
   assert(applyAction(base(), { type: 'session/add', session: known }).sessions[1] === known, 'session/add: 参照が全部正本にあれば手を加えない');
+  const again = applyAction(base(), { type: 'session/add', session: { id: 's1', mode: 'work' } });
+  eq(again.sessions.map(x => x.id), ['s1'], 'session/add: 同じ id の記録は二重に積まない(送り直しが重なっても)');
 }
 
 /* ===== 未知の意図 ===== */

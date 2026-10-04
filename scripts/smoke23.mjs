@@ -16,7 +16,7 @@ import * as os from 'node:os';
 //  W) 完了の保存に失敗したら、区切った実働の付け先を元に戻す
 //  X) 選択中のタスクの完了・削除の応答待ちに開始しても、そのタスクに付かない
 //  Y) 削除の保存に失敗したら、匿名化した内訳と付け先を戻す
-//  Z) 元に戻すの保存に失敗したら、内訳を削除済みのタスクに付け直さない
+//  Z) 元に戻すの保存に失敗したら、記録は削除済みのタスクを指さない
 //  AA) 応答前に二度押したノイズの切り替えは元に戻る
 //  AB) 応答前に二度押したタスク行の選択は元に戻る
 //  AC) 実行中の選択の保存に失敗したら、付け先を正本の選択に戻す
@@ -24,6 +24,8 @@ import * as os from 'node:os';
 //  AE) 選択が成功しても正規化で外れたら、付け先もそれに合わせる
 //  AF) 選択中だったタスクを元に戻す応答待ちの間も、実働はそのタスクに付く(失敗なら外す)
 //  AG) 完了を送ったタスクの行を応答前に押しても、付け先にならない
+//  AH) 保存できなかった記録は捨てず、書けるようになったら送り直す
+//  AI) 削除の応答待ちにセッションが終わり、その削除が失敗しても帰属は残る
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -216,6 +218,26 @@ const slowWrites = (app, ms) => app.evaluate((_, ms) => {
   const orig = fs.writeFileSync;
   fs.writeFileSync = (...a) => { const end = Date.now() + ms; while (Date.now() < end); return orig(...a); };
 }, ms);
+const slowThenFailNextWrite = (app, ms) => app.evaluate((_, ms) => {
+  const fs = process.mainModule.require('fs');
+  const orig = fs.writeFileSync;
+  fs.writeFileSync = () => {
+    fs.writeFileSync = orig;
+    const end = Date.now() + ms; while (Date.now() < end);
+    throw new Error('EIO: テスト用の遅い書き込み失敗');
+  };
+}, ms);
+// 戻すまで書き込みを失敗させ続ける(ディスクが一時的に書けない状態)。
+const setWritesFailing = (app, on) => app.evaluate((_, on) => {
+  const fs = process.mainModule.require('fs');
+  if (on && !globalThis.__origWrite) {
+    globalThis.__origWrite = fs.writeFileSync;
+    fs.writeFileSync = () => { throw new Error('EACCES: テスト用の書き込み失敗'); };
+  } else if (!on && globalThis.__origWrite) {
+    fs.writeFileSync = globalThis.__origWrite;
+    globalThis.__origWrite = null;
+  }
+}, on);
 const failNextWrite = app => app.evaluate(() => {
   const fs = process.mainModule.require('fs');
   const orig = fs.writeFileSync;
@@ -359,7 +381,7 @@ const failNextWrite = app => app.evaluate(() => {
   fs.rmSync(ud, { recursive: true, force: true });
 }
 
-/* ===== Z: 元に戻すの保存に失敗したら内訳を付け直さない ===== */
+/* ===== Z: 元に戻すの保存に失敗したら記録は削除済みのタスクを指さない ===== */
 {
   const ud = mkdir();
   const { app, page } = await launch(ud);
@@ -375,14 +397,16 @@ const failNextWrite = app => app.evaluate(() => {
   const after = await page.evaluate(async () => {
     document.querySelector('#toast .toast-action').click();
     await new Promise(r => setTimeout(r, 500));
-    return { segs: timer.current.segments.map(s => s.taskId), seg: timer.current.segTaskId,
-             kept: data.tasks.some(t => t.id === 'z1') };
+    const r = { seg: timer.current.segTaskId, kept: data.tasks.some(t => t.id === 'z1') };
+    finishSession(true);
+    return r;
   });
-  console.log('Z: after failed restore=', JSON.stringify(after));
+  await page.waitForTimeout(500);
+  const rec = readData(ud).sessions.at(-1);
+  console.log('Z: after failed restore=', JSON.stringify(after), 'record=', JSON.stringify(rec.taskTimes));
   assert(!after.kept, 'Z: 正本ではタスクは削除されたまま');
-  assert(after.segs.length > 0 && after.segs.every(id => id === null), 'Z: 内訳は匿名化されたまま');
   assert(after.seg === null, 'Z: 付け先も削除済みのタスクに戻らない');
-  await page.evaluate(() => clearInterval(timer.intervalId));
+  assert(!rec.taskIds.includes('z1') && rec.taskTimes.every(tt => tt.taskId !== 'z1'), 'Z: 記録は削除済みのタスクを指さない');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }
@@ -534,22 +558,21 @@ for (const fail of [false, true]) {
   await page.waitForTimeout(1200);           // 応答待ちの区間を 1 秒以上にする(内訳に積まれる長さ)
   // 応答前にセッションを完了させる(成功時)。失敗時は応答後の内訳を見る。
   const after = await page.evaluate(async fail => {
-    if (!fail) { finishSession(true); return null; }
-    closeSegment();
-    return { seg: timer.current.segTaskId, segs: timer.current.segments.map(s => s.taskId) };
+    const r = fail ? { seg: timer.current.segTaskId } : null;
+    finishSession(true);
+    return r;
   }, fail);
   await page.waitForTimeout(800);
   const saved = readData(ud);
+  const rec = saved.sessions[saved.sessions.length - 1];
   if (!fail) {
-    const rec = saved.sessions[saved.sessions.length - 1];
     console.log(`${label}: pending=`, JSON.stringify(pending), 'record=', JSON.stringify(rec.taskTimes));
     assert(pending.focus === 'af1' && pending.seg === 'af1', 'AF: 応答待ちの間もフォーカスと付け先は戻したタスク');
     assert(rec.taskTimes.every(tt => tt.taskId === 'af1'), 'AF: 応答待ちの間の実働もそのタスクに付く');
   } else {
-    console.log(`${label}: after=`, JSON.stringify(after));
+    console.log(`${label}: after=`, JSON.stringify(after), 'record=', JSON.stringify(rec.taskTimes));
     assert(after.seg === null, 'AF(失敗): 付け先は外れる');
-    assert(after.segs.every(id => id === null), 'AF(失敗): 削除済みのタスクを指す内訳を残さない');
-    await page.evaluate(() => clearInterval(timer.intervalId));
+    assert(!rec.taskIds.includes('af1') && rec.taskTimes.every(tt => tt.taskId !== 'af1'), 'AF(失敗): 記録は削除済みのタスクを指さない');
   }
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
@@ -581,6 +604,54 @@ for (const fail of [false, true]) {
   assert(errors.length === 0, 'AG: コンソール/ページエラーが出ない');
   assert(pending.focus === 'ag1' && pending.seg === 'ag1', 'AG: 完了を送ったタスクは選べない');
   assert(!rec.taskIds.includes('ag2'), 'AG: 記録は完了したタスクに付かない');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AH: 保存できなかった記録は書けるようになったら送り直す ===== */
+{
+  const ud = mkdir();
+  const { app, page } = await launch(ud);
+  await page.evaluate(async t => {
+    await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: t.id });
+    startPauseResume();
+  }, task('ah1', '作業中のタスク'));
+  await page.waitForTimeout(1200);
+  await setWritesFailing(app, true);
+  await page.evaluate(() => finishSession(true));
+  await page.waitForTimeout(500);
+  const lost = readData(ud).sessions.length;
+  await setWritesFailing(app, false);
+  // 次の操作で書けたら、取りこぼした記録も一緒に乗る。
+  await page.evaluate(t => mutate({ type: 'task/add', task: t }), task('ah2', '次の操作'));
+  await page.waitForTimeout(800);
+  const saved = readData(ud).sessions;
+  console.log('AH: sessions after failure=', lost, 'after retry=', JSON.stringify(saved.map(x => x.taskIds)));
+  assert(lost === 0, 'AH: 失敗した時点では記録は書かれていない');
+  assert(saved.length === 1 && saved[0].taskIds.includes('ah1'), 'AH: 次に書けたとき記録を送り直す(二重にならない)');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AI: 削除の応答待ちに終わったセッションは、削除が失敗すれば帰属を保つ ===== */
+{
+  const ud = mkdir();
+  const { app, page } = await launch(ud);
+  await page.evaluate(async t => {
+    await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: t.id });
+    startPauseResume();
+  }, task('ai1', '消せないタスク'));
+  await page.waitForTimeout(1200);
+  await slowThenFailNextWrite(app, 600);
+  await page.evaluate(() => { deleteTask('ai1'); finishSession(true); });
+  await page.waitForTimeout(1500);
+  const saved = readData(ud);
+  const rec = saved.sessions.at(-1);
+  console.log('AI: tasks=', JSON.stringify(saved.tasks.map(t => t.id)), 'record=', JSON.stringify(rec && rec.taskTimes));
+  assert(saved.tasks.some(t => t.id === 'ai1'), 'AI: 削除は失敗してタスクは残る');
+  assert(rec && rec.taskIds.includes('ai1'), 'AI: 応答待ちに終わった記録もそのタスクに付いたまま');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

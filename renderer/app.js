@@ -43,7 +43,8 @@ function settle(res) {
   if (!res) { toast(SAVE_FAILED); return null; }
   applySnapshot(res.snapshot);
   if (res.ok === false) toast(res.error ? `保存に失敗しました: ${res.error}` : SAVE_FAILED);
-  else if (res.preserved) toast(`読み込めなかった元のデータファイルを ${res.preserved} に退避しました`);
+  else if (unsavedSessions.length) retryUnsavedSessions();   // 書けるようになったら送り直す
+  if (res.ok !== false && res.preserved) toast(`読み込めなかった元のデータファイルを ${res.preserved} に退避しました`);
   return res;
 }
 
@@ -51,6 +52,21 @@ function settle(res) {
 // ように応答待ちの間の編集が古い内容で上書きされることがない。
 // 失敗(容量不足・権限エラー等)は黙殺せず通知する。
 const mutate = action => window.api.mutate(action).then(settle, () => { toast(SAVE_FAILED); return null; });
+
+// 保存できなかった記録。セッションの状態は送った直後に消えるので、ここで持って
+// おかないと記録はどこにも残らない(丸ごと置換だった頃は手元の data に残り、次の
+// 保存で一緒に書かれていた)。次に保存が通ったときと終了時に送り直す。
+// session/add は同じ id を二重に積まないので、送り直しが重なっても増えない。
+const unsavedSessions = [];
+function sendSession(action) {
+  return mutate(action).then(res => {
+    if (failed(res)) unsavedSessions.push(action);
+    return res;
+  });
+}
+function retryUnsavedSessions() {
+  for (const action of unsavedSessions.splice(0)) sendSession(action);
+}
 
 // フォーカス対象だけは応答を待たずに覚えておく。表示の遅れは往復のぶん(ミリ秒)で
 // 済むが、選んだ直後に開始されると計測の付け先が空のままセッションが始まり、
@@ -452,63 +468,39 @@ function deleteTask(id) {
     task: t,
     index: idx,
     wasSelected: focusTaskId() === id,
-    patches: [],
-    segPatches: []
+    patches: []
   };
   for (const p of data.sessions) {
     const indexes = [];
     (p.taskTimes || []).forEach((tt, i) => { if (tt.taskId === id) indexes.push(i); });
     if (indexes.length) undo.patches.push({ sessionId: p.id, indexes });
   }
-  if (timer.current) {
-    const c = timer.current;
-    // 進行中セグメントが削除対象なら、先に確定(closeSegment)してから匿名化する。
-    // switchSegment(null) を先に呼ぶと、closeSegment が削除済みIDのセグメントを
-    // 新たに積み、下の匿名化ループを素通りして履歴にIDが残ってしまう。
-    if (c.segTaskId === id) {
-      closeSegment();
-      c.segTaskId = null;
-      c.segStartMs = pomoElapsedMs();
-    }
-    for (const s of c.segments) {
-      if (s.taskId === id) {
-        s.taskId = null;
-        undo.segPatches.push(s);
-      }
-    }
-  }
+  // 実行中セッションの内訳はここでは匿名化しない。応答前に匿名化すると、その間に
+  // セッションが終わったとき、記録は匿名のまま送られ(タスク別に合算済みなので
+  // 後から切り分けられない)、削除が失敗してタスクが残っても帰属は戻らない。
+  // 削除されたタスクへの参照は、記録が届いた時点で session/add が外す(main は
+  // 意図を受け取った順に適用するので、削除が通っていれば必ず外れる)。
+  // 付け先だけは今外す(フォーカスの要求と揃える。失敗なら mutateFocus が戻す)。
+  if (timer.current && timer.current.segTaskId === id) switchSegment(null);
   const action = { type: 'task/delete', id };
-  const session = timer.current;
-  const sent = undo.wasSelected ? mutateFocus(null, action) : mutate(action);
-  sent.then(res => {
-    if (!failed(res)) return;
-    // 削除できなければタスクは正本に残っている。匿名化した内訳を戻す(付け先は
-    // mutateFocus が戻す)。終わったセッションの記録は送信済みなので手を出さない。
-    if (timer.current === session) for (const s of undo.segPatches) s.taskId = id;
-  });
+  if (undo.wasSelected) mutateFocus(null, action); else mutate(action);
   toast(`「${t.title}」を削除しました`, { label: '元に戻す', fn: () => restoreTask(undo) });
 }
 
 function restoreTask(u) {
-  // 内訳は応答を待たずに付け直す。待つと、その間にセッションが終わったとき、
-  // 記録は匿名のまま送られ(タスク別に合算済みなので後から切り分けられない)、
-  // タスクは戻っても実働が失われる。main は意図を受け取った順に適用するので、
-  // 戻せていれば記録はそのタスクに付き、戻せなければ session/add がまだ無い
-  // タスクへの参照を外す。
+  // 実行中セッションの内訳は削除時に匿名化していないので、戻すものは無い。
+  // 戻せなかった場合の参照は session/add が外す。
   // 選択も戻すなら、フォーカスの要求として送る。応答までの間も戻したタスクが
   // フォーカス対象になり、その間の実働(や間に始めたセッション)も匿名にならない。
   // 付け先は mutateFocus が決着後に正本のフォーカスへ合わせる。
-  for (const s of u.segPatches) s.taskId = u.task.id;   // 実行中セッションはレンダラ側の状態
   const select = u.wasSelected && !u.task.completed;
   const action = { type: 'task/restore', task: u.task, index: u.index, patches: u.patches, select };
-  if (select) switchSegment(u.task.id);
-  (select ? mutateFocus(u.task.id, action) : mutate(action)).then(res => {
-    // 戻せなかったら、実行中のセッションでそのタスクを指す内訳を匿名に戻す
-    // (控えていた内訳に加え、応答待ちの間に付けた分も)。終わった記録は送信済みで、
-    // まだ無いタスクへの参照は session/add が外す。
-    if (!failed(res) || !timer.current) return;
-    for (const s of timer.current.segments) if (s.taskId === u.task.id) s.taskId = null;
-  });
+  if (select) {
+    switchSegment(u.task.id);
+    mutateFocus(u.task.id, action);
+  } else {
+    mutate(action);
+  }
 }
 
 /* ============ タイマー ============ */
@@ -684,7 +676,7 @@ function recordSession(completed, sync) {
     }
   };
   if (sync) window.api.mutateSync(action);
-  else mutate(action);
+  else sendSession(action);
 }
 
 function finishSession(completed) {
@@ -1424,6 +1416,7 @@ document.querySelectorAll('.modal-backdrop').forEach(m => {
 // 残るのはこの打ち切り記録だけで、終了(Tray「終了」/Cmd+Q)でレンダラが破棄される
 // 前に書き終えるため同期 IPC でブロッキングする。
 window.addEventListener('beforeunload', () => {
+  for (const action of unsavedSessions.splice(0)) window.api.mutateSync(action);
   if (timer.current) recordSession(false, true);
 });
 

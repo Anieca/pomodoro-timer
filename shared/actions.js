@@ -151,8 +151,12 @@ function applyAction(state, action) {
     case 'flow/set':
       return { ...s, timer: { mode: a.mode, cycle: a.cycle } };
 
-    case 'session/add':
-      return { ...s, sessions: [...sessions, keepKnownTasks(asObject(a.session), tasks)] };
+    case 'session/add': {
+      const session = asObject(a.session);
+      // 保存に失敗した記録はレンダラが送り直す。重なっても二重に積まない。
+      if (session.id != null && sessions.some(x => asObject(x).id === session.id)) return s;
+      return { ...s, sessions: [...sessions, keepKnownTasks(session, tasks)] };
+    }
 
     default:
       return null;

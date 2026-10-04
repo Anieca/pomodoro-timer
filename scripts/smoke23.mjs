@@ -18,6 +18,7 @@ import * as os from 'node:os';
 //  Y) 削除の保存に失敗したら、匿名化した内訳と付け先を戻す
 //  Z) 元に戻すの保存に失敗したら、内訳を削除済みのタスクに付け直さない
 //  AA) 応答前に二度押したノイズの切り替えは元に戻る
+//  AB) 応答前に二度押したタスク行の選択は元に戻る
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -397,6 +398,29 @@ const failNextWrite = app => app.evaluate(() => {
   console.log('AA: before=', before, 'saved=', saved, 'onScreen=', onScreen, 'errors=', errors);
   assert(errors.length === 0, 'AA: コンソール/ページエラーが出ない');
   assert(saved === before && onScreen === before, 'AA: 二度切り替えたら元の設定に戻る');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AB: 応答前の二度押しでタスクの選択は元に戻る ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(t => mutate({ type: 'task/add', task: t }), task('ab1', '選ぶタスク'));
+  await page.waitForTimeout(200);
+  await slowWrites(app, 400);
+  // 行は応答まで描き直されないので、二度目のクリックも同じ行(描画時は未選択)に届く。
+  await page.evaluate(() => {
+    const row = document.querySelector('#taskList .task-item');
+    row.click();
+    row.click();
+  });
+  await page.waitForTimeout(1500);
+  const onScreen = await page.evaluate(() => ({ selected: data.selectedTaskId, focus: focusTaskId() }));
+  const saved = readData(ud).selectedTaskId;
+  console.log('AB: saved=', saved, 'onScreen=', JSON.stringify(onScreen), 'errors=', errors);
+  assert(errors.length === 0, 'AB: コンソール/ページエラーが出ない');
+  assert(saved === null && onScreen.selected === null && onScreen.focus === null, 'AB: 二度押したら未選択に戻る');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

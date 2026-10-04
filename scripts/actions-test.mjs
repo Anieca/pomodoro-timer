@@ -99,6 +99,10 @@ const base = () => ({
   // 位置が範囲外でも落とさない(控えを作った後に他のタスクが減っている場合)
   const clamped = applyAction({ ...del, tasks: [] }, { type: 'task/restore', task: before.tasks[0], index: 9, patches, select: false });
   eq(clamped.tasks.map(t => t.id), ['t1'], 'task/restore: 範囲外の位置は末尾に寄せる');
+  // 削除が失敗して正本に残っているタスクを戻しても、二重にしない。
+  const twice = applyAction(before, { type: 'task/restore', task: before.tasks[0], index: 0, patches, select: true });
+  eq(twice.tasks.map(t => t.id), before.tasks.map(t => t.id), 'task/restore: 既にあるタスクは挿入しない');
+  eq(twice.sessions, before.sessions, 'task/restore: 既にあるなら内訳も触らない');
 }
 
 /* ===== 設定は差分 ===== */

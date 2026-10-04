@@ -95,6 +95,9 @@ function applyAction(state, action) {
 
     case 'task/restore': {
       const task = asObject(a.task);
+      // 削除の応答前に元に戻すを押し、その削除が失敗していると、タスクは正本に
+      // 残ったまま。重ねて挿入すると同じ id が二行になり、正規化でも消えない。
+      if (tasks.some(t => asObject(t).id === task.id)) return s;
       const next = tasks.slice();
       const index = Number.isFinite(a.index) ? Math.min(Math.max(0, Math.round(a.index)), next.length) : next.length;
       next.splice(index, 0, task);

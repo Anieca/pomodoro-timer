@@ -167,20 +167,23 @@ function taskItem(t) {
   if (isSelected) li.classList.add('selected');
 
   if (!t.completed) {
+    // 次の値はクリック時点のフォーカスから決める。描画時の isSelected を使うと、
+    // 応答前に二度押したとき両方が同じ要求を送り、打ち消し合わない。
+    const toggleFocus = () => selectTask(focusTaskId() === t.id ? null : t.id);
     li.title = isSelected ? 'クリックでセット解除' : 'クリックでフォーカス対象にセット';
     li.tabIndex = 0;
     li.setAttribute('role', 'button');
     li.setAttribute('aria-pressed', String(isSelected));
     li.addEventListener('click', e => {
       if (e.target.closest('button, input')) return;
-      selectTask(isSelected ? null : t.id);
+      toggleFocus();
     });
     li.addEventListener('keydown', e => {
       if (e.target !== li) return;
       if (e.key === 'Enter' || e.code === 'Space') {
         e.preventDefault();
         e.stopPropagation();
-        selectTask(isSelected ? null : t.id);
+        toggleFocus();
       }
     });
   }

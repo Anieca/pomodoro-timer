@@ -29,6 +29,8 @@ import * as os from 'node:os';
 //  AJ) 応答待ちの編集のあとに削除しても、取り消しはその編集を巻き戻さない
 //  AK) 応答前に削除を二度押しても、取り消しが効く
 //  AL) 削除してから取り消すまでに終わった記録も、取り消しでそのタスクに戻る
+//  AM) 取り消しで選択も戻すかは、実際に削除された正本で決める
+//  AN) 削除の応答待ちの行は隠れて操作を受けず、削除が失敗したら戻る
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -728,6 +730,61 @@ for (const fail of [false, true]) {
   assert(!stripped.taskIds.includes('al1'), 'AL: 削除中に届いた記録は削除済みのタスクを指さない');
   assert(saved.tasks.some(t => t.id === 'al1'), 'AL: 取り消しでタスクが戻る');
   assert(rec.taskIds.includes('al1') && rec.taskTimes.some(tt => tt.taskId === 'al1'), 'AL: その間の記録もそのタスクに戻る');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AM: 取り消しで選択を戻すかは削除された正本で決める ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(async t => {
+    await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: t.id });
+  }, task('am1', '選択中のタスク'));
+  await failNextWrite(app);
+  // 完了(=フォーカスを外す要求)は失敗し、続く削除は通る。main では選択中のまま削除される。
+  // 完了の失敗トーストが削除のトーストを上書きするので、取り消しはトーストに渡された
+  // 操作を控えておいて呼ぶ。
+  await page.evaluate(() => {
+    const orig = toast;
+    toast = (msg, action) => { if (action) window.__undo = action.fn; return orig(msg, action); };
+    toggleTaskDone('am1', true);
+    deleteTask('am1');
+  });
+  await page.waitForTimeout(500);
+  await page.evaluate(() => window.__undo());
+  await page.waitForTimeout(500);
+  const after = await page.evaluate(() => ({ kept: data.tasks.some(t => t.id === 'am1'), selected: data.selectedTaskId }));
+  console.log('AM: after undo=', JSON.stringify(after), 'errors=', errors.filter(e => !/保存/.test(e)));
+  assert(after.kept, 'AM: 取り消しでタスクが戻る');
+  assert(after.selected === 'am1', 'AM: 削除されたとき選択中だったので選択も戻る');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AN: 削除の応答待ちの行は隠れ、失敗したら戻る ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(t => mutate({ type: 'task/add', task: t }), task('an1', '消えかけのタスク'));
+  await page.waitForTimeout(200);
+  await slowThenFailNextWrite(app, 800);
+  const during = await page.evaluate(() => {
+    deleteTask('an1');
+    const rows = [...document.querySelectorAll('#taskList .task-item')].filter(li => li.textContent.includes('消えかけのタスク')).length;
+    toggleTaskDone('an1', true);            // 応答待ちの間の操作は重ねない
+    return rows;
+  });
+  await page.waitForTimeout(2000);
+  const after = await page.evaluate(() => ({
+    rows: [...document.querySelectorAll('#taskList .task-item')].filter(li => li.textContent.includes('消えかけのタスク')).length,
+    completed: data.tasks.find(t => t.id === 'an1').completed
+  }));
+  console.log('AN: rows during=', during, 'after=', JSON.stringify(after), 'errors=', errors);
+  assert(during === 0, 'AN: 削除の応答待ちの間は行を隠す');
+  assert(after.rows === 1, 'AN: 削除が失敗したら行が戻る');
+  assert(after.completed === false, 'AN: 応答待ちの間の完了は送られない');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

@@ -102,6 +102,7 @@ const base = () => ({
   // 取り消しの控えは削除直前の正本から作る(main が呼ぶ)。控えで戻せば往復する。
   const u = deletionUndo(before, 't1');
   eq({ task: u.task.id, index: u.index, patches: u.patches }, { task: 't1', index: 0, patches }, 'deletionUndo: 削除直前の正本から位置と内訳を控える');
+  assert(u.selected === true && deletionUndo(before, 't2').selected === false, 'deletionUndo: 選択されていたかも正本で控える');
   eq(sorted(normalizeData(applyAction(del, { type: 'task/restore', ...u, select: true }))), sorted(normalizeData(before)), 'deletionUndo: 控えで戻すと削除前と同じ内容になる');
   assert(deletionUndo(before, 'nope') === null, 'deletionUndo: 無いタスクには控えを作らない');
   // 削除が失敗して正本に残っているタスクを戻しても、二重にしない。

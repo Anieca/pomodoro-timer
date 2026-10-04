@@ -177,7 +177,9 @@ function deletionUndo(state, id) {
     asArray(asObject(p).taskTimes).forEach((tt, i) => { if (asObject(tt).taskId === id) indexes.push(i); });
     if (indexes.length) patches.push({ sessionId: asObject(p).id, indexes });
   }
-  return { task: tasks[index], index, patches };
+  // 選択されていたかも正本で控える。レンダラのフォーカスは応答待ちの要求の値なので、
+  // その要求が失敗していると、実際に削除された状態とずれる。
+  return { task: tasks[index], index, patches, selected: s.selectedTaskId === id };
 }
 
 module.exports = { applyAction, deletionUndo };

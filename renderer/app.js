@@ -159,8 +159,11 @@ function renderTasks() {
   // 名前を編集している間は組み直さない。意図の反映は全体の再描画で来るので、
   // 守らないと編集中に別の変更(セッションの記録など)が入っただけで入力が消える。
   if ($('.task-rename')) return;
-  const open = data.tasks.filter(t => !t.completed);
-  const done = data.tasks.filter(t => t.completed);
+  // 削除の応答待ちのタスクは描かない(行が残っていると、完了や名前の変更が削除の
+  // あとに並んで消えたタスクに当たり、取り消しでも戻らない)。
+  const shown = data.tasks.filter(t => !pendingDeletes.has(t.id));
+  const open = shown.filter(t => !t.completed);
+  const done = shown.filter(t => t.completed);
   const list = $('#taskList');
   const doneList = $('#doneList');
   list.textContent = '';
@@ -435,7 +438,7 @@ const isDone = t => (pendingDone.has(t.id) ? pendingDone.get(t.id).completed : t
 function selectTask(taskId) {
   // 完了した(または完了を送った)タスクは選べない。main でも正規化で外れる。
   const t = taskId && data.tasks.find(t => t.id === taskId);
-  if (t && isDone(t)) return;
+  if (t && (isDone(t) || pendingDeletes.has(t.id))) return;
   switchSegment(taskId);            // 実行中セッションの内訳はレンダラ側の状態
   mutateFocus(taskId, { type: 'task/select', id: taskId });
 }
@@ -444,7 +447,7 @@ function selectTask(taskId) {
 // 応答が届く前に二度切り替えたとき両方が「完了」を送り、画面と保存がずれる。
 function toggleTaskDone(id, completed) {
   const t = data.tasks.find(t => t.id === id);
-  if (!t) return;
+  if (!t || pendingDeletes.has(id)) return;   // 削除の応答待ちのタスクには重ねない
   if (completed === undefined) completed = !isDone(t);
   const action = { type: 'task/setDone', id, completed, at: completed ? new Date().toISOString() : null };
   const seq = ++doneSeq;
@@ -472,6 +475,7 @@ function deleteTask(id) {
   if (!t || pendingDeletes.has(id)) return;
   pendingDeletes.add(id);
   undoablePatches.set(id, []);
+  renderAll();                      // 応答まで行を隠す(残すと二度目の操作を受けてしまう)
   const wasSelected = focusTaskId() === id;
   // 実行中セッションの内訳はここでは匿名化しない。応答前に匿名化すると、その間に
   // セッションが終わったとき、記録は匿名のまま送られ(タスク別に合算済みなので
@@ -490,12 +494,16 @@ function deleteTask(id) {
     if (failed(res) || !res.undo) return;
     const extra = undoablePatches.get(id) || [];
     undoablePatches.delete(id);
-    restoreTask({ ...res.undo, patches: res.undo.patches.concat(extra), wasSelected });
+    // 選択されていたかは main の控え(削除直前の正本)で決める。
+    restoreTask({ ...res.undo, patches: res.undo.patches.concat(extra), wasSelected: res.undo.selected });
   };
   const sent = (wasSelected ? mutateFocus(null, action) : mutate(action)).then(res => {
     settled = { res };
     pendingDeletes.delete(id);
-    if (failed(res)) undoablePatches.delete(id);   // 削除されていなければ取り消すものも無い
+    if (failed(res)) {
+      undoablePatches.delete(id);   // 削除されていなければ取り消すものも無い
+      renderAll();                  // 隠していた行を戻す(応答の描画は隠したまま済んでいる)
+    }
     return res;
   });
   toast(`「${t.title}」を削除しました`, { label: '元に戻す', fn: () => {
@@ -782,7 +790,7 @@ function chime() {
 function renderFocusTask() {
   const wrap = $('#focusTask');
   wrap.textContent = '';
-  const t = data.tasks.find(t => t.id === data.selectedTaskId);
+  const t = data.tasks.find(t => t.id === data.selectedTaskId && !pendingDeletes.has(t.id));
 
   if (t) {
     const card = document.createElement('div');
@@ -829,7 +837,7 @@ function renderFocusTask() {
     const buildItems = () => {
       const q = input.value.trim();
       const ql = q.toLowerCase();
-      const open = data.tasks.filter(t => !t.completed);
+      const open = data.tasks.filter(t => !t.completed && !pendingDeletes.has(t.id));
       const matches = (ql ? open.filter(t => t.title.toLowerCase().includes(ql)) : open).slice(0, 5);
       items = matches.map(t => ({ type: 'task', task: t }));
       if (q && !open.some(t => t.title.toLowerCase() === ql)) items.push({ type: 'create', title: q });

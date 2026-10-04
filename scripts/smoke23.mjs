@@ -35,6 +35,7 @@ import * as os from 'node:os';
 //  AP) 記録の失敗の応答を待つ間に終了しても、記録は終了時に書かれる
 //  AQ) 設定を閉じてすぐ開始しても、変えた長さで始まる
 //  AR) 書けていない記録が削除のあとに書かれても、取り消しでそのタスクに戻る
+//  AS) クイック追加で応答前に二度確定しても、タスクは一つだけ作られる
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -887,6 +888,31 @@ for (const fail of [false, true]) {
   console.log('AR: stripped=', JSON.stringify(stripped && stripped.taskTimes), 'restored=', JSON.stringify(rec && rec.taskTimes), 'errors=', errors.filter(e => !/保存/.test(e)));
   assert(stripped && !stripped.taskIds.includes('ar1'), 'AR: 削除のあとに書かれた記録は削除済みのタスクを指さない');
   assert(rec && rec.taskIds.includes('ar1') && rec.taskTimes.some(tt => tt.taskId === 'ar1'), 'AR: 取り消しでその記録もタスクに戻る');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AS: クイック追加の二度確定でタスクを二重に作らない ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await slowWrites(app, 400);
+  await page.evaluate(() => {
+    const form = document.querySelector('#focusTask form');
+    const input = form.querySelector('input');
+    input.focus();
+    input.value = '素早く作るタスク';
+    input.dispatchEvent(new Event('input'));
+    form.requestSubmit();
+    form.requestSubmit();
+  });
+  await page.waitForTimeout(2500);
+  const saved = readData(ud);
+  const made = saved.tasks.filter(t => t.title === '素早く作るタスク');
+  console.log('AS: created=', made.length, 'selected=', saved.selectedTaskId, 'errors=', errors);
+  assert(errors.length === 0, 'AS: コンソール/ページエラーが出ない');
+  assert(made.length === 1, 'AS: タスクは一つだけ作られる');
+  assert(made[0] && saved.selectedTaskId === made[0].id, 'AS: 作ったタスクがセットされる');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

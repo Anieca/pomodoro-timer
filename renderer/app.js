@@ -481,7 +481,7 @@ function selectTask(taskId) {
   const t = taskId && data.tasks.find(t => t.id === taskId);
   if (t && (isDone(t) || pendingDeletes.has(t.id))) return;
   switchSegment(taskId);            // 実行中セッションの内訳はレンダラ側の状態
-  mutateFocus(taskId, { type: 'task/select', id: taskId });
+  return mutateFocus(taskId, { type: 'task/select', id: taskId });
 }
 
 // completed は操作した部品の状態から受け取る。最後に確定した正本を反転すると、
@@ -874,9 +874,15 @@ function renderFocusTask() {
     let items = [];
     let active = 0;
 
+    // 選んだら応答まで欄を止める。欄は正本が返って描き直されるまで残るので、
+    // そのままだと二度目の Enter やクリックで同じタスクをもう一つ作ってしまう。
+    // 何も送らなかったときや、描き直されずに残ったときは戻す。
     const choose = it => {
-      if (it.type === 'task') selectTask(it.task.id);
-      else selectTask(addTask(it.title).id);
+      if (input.disabled) return;
+      input.disabled = true;
+      list.hidden = true;
+      const sent = it.type === 'task' ? selectTask(it.task.id) : selectTask(addTask(it.title).id);
+      Promise.resolve(sent).then(() => { if (form.isConnected) input.disabled = false; });
     };
 
     const buildItems = () => {

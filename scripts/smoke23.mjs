@@ -31,6 +31,8 @@ import * as os from 'node:os';
 //  AL) 削除してから取り消すまでに終わった記録も、取り消しでそのタスクに戻る
 //  AM) 取り消しで選択も戻すかは、実際に削除された正本で決める
 //  AN) 削除の応答待ちの行は隠れて操作を受けず、削除が失敗したら戻る
+//  AO) 書けなかったタイマーの進行状態は、書けるようになったら送り直す
+//  AP) 記録の失敗の応答を待つ間に終了しても、記録は終了時に書かれる
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -785,6 +787,53 @@ for (const fail of [false, true]) {
   assert(during === 0, 'AN: 削除の応答待ちの間は行を隠す');
   assert(after.rows === 1, 'AN: 削除が失敗したら行が戻る');
   assert(after.completed === false, 'AN: 応答待ちの間の完了は送られない');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AO: 書けなかった進行状態は書けるようになったら送り直す ===== */
+{
+  const ud = mkdir();
+  const { app, page } = await launch(ud);
+  await page.evaluate(() => startPauseResume());
+  await setWritesFailing(app, true);
+  const live = await page.evaluate(() => { finishSession(true); return { mode: timer.mode, cycle: timer.cycle }; });
+  await page.waitForTimeout(500);
+  await setWritesFailing(app, false);
+  await page.evaluate(t => mutate({ type: 'task/add', task: t }), task('ao1', '次の操作'));
+  await page.waitForTimeout(800);
+  const saved = readData(ud).timer;
+  console.log('AO: live=', JSON.stringify(live), 'saved=', JSON.stringify(saved));
+  assert(live.mode !== 'work', 'AO: 手元のタイマーは次のフェーズへ進んでいる');
+  assert(saved.mode === live.mode && saved.cycle === live.cycle, 'AO: 次に書けたとき進行状態も送り直す');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AP: 記録の失敗を待つ間に終了しても記録は残る ===== */
+{
+  const ud = mkdir();
+  const { app, page } = await launch(ud);
+  await page.evaluate(async t => {
+    await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: t.id });
+    startPauseResume();
+  }, task('ap1', '作業中のタスク'));
+  await page.waitForTimeout(1200);
+  await slowThenFailNextWrite(app, 800);
+  // 記録を送った直後(失敗の応答が届く前)に終了処理を走らせ、そのままレンダラを
+  // 止める(破棄されたのと同じく、以降の応答は処理されない)。止まっている間に
+  // ディスクを見れば、終了時の同期送信で書けたかだけが分かる。
+  const busy = page.evaluate(() => {
+    finishSession(true);
+    window.dispatchEvent(new Event('beforeunload'));
+    const end = Date.now() + 2500; while (Date.now() < end);
+  });
+  await new Promise(r => setTimeout(r, 1500));
+  const saved = readData(ud).sessions;
+  await busy;
+  console.log('AP: sessions=', JSON.stringify(saved.map(x => x.taskIds)));
+  assert(saved.length === 1 && saved[0].taskIds.includes('ap1'), 'AP: 終了時の同期送信で記録が書かれる(二重にならない)');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

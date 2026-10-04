@@ -43,7 +43,7 @@ function settle(res) {
   if (!res) { toast(SAVE_FAILED); return null; }
   applySnapshot(res.snapshot);
   if (res.ok === false) toast(res.error ? `保存に失敗しました: ${res.error}` : SAVE_FAILED);
-  else if (unsavedSessions.length) retryUnsavedSessions();   // 書けるようになったら送り直す
+  else retryUnsaved();              // 書けるようになったら、書けていない分を送り直す
   if (res.ok !== false && res.preserved) toast(`読み込めなかった元のデータファイルを ${res.preserved} に退避しました`);
   return res;
 }
@@ -53,19 +53,40 @@ function settle(res) {
 // 失敗(容量不足・権限エラー等)は黙殺せず通知する。
 const mutate = action => window.api.mutate(action).then(settle, () => { toast(SAVE_FAILED); return null; });
 
-// 保存できなかった記録。セッションの状態は送った直後に消えるので、ここで持って
-// おかないと記録はどこにも残らない(丸ごと置換だった頃は手元の data に残り、次の
-// 保存で一緒に書かれていた)。次に保存が通ったときと終了時に送り直す。
-// session/add は同じ id を二重に積まないので、送り直しが重なっても増えない。
-const unsavedSessions = [];
+// まだ書けたと確認できていない記録(action → 送信中か)。セッションの状態は送った
+// 直後に消えるので、ここで持っておかないと記録はどこにも残らない(丸ごと置換だった
+// 頃は手元の data に残り、次の保存で一緒に書かれていた)。送る前に積み、成功の応答で
+// 外す。失敗の応答を待つ間に終了しても、終了時の同期送信で拾える。
+// 次に保存が通ったときと終了時に送り直す。session/add は同じ id を二重に積まない
+// ので、送り直しが重なっても増えない。
+const unsavedSessions = new Map();
 function sendSession(action) {
+  unsavedSessions.set(action, true);
   return mutate(action).then(res => {
-    if (failed(res)) unsavedSessions.push(action);
+    if (failed(res)) unsavedSessions.set(action, false);
+    else unsavedSessions.delete(action);
     return res;
   });
 }
-function retryUnsavedSessions() {
-  for (const action of unsavedSessions.splice(0)) sendSession(action);
+
+// タイマーの進行状態(フェーズとサイクル)も同じ。flow/set が書けないと、正本は
+// 古いままなのに手元のタイマーは進んでおり、ほかの意図はそれぞれの差分しか運ばない
+// ので、次の遷移まで二度と書かれない(その前に終了すると違うフェーズで再開する)。
+// 常に手元の最新値を送るので、未保存かどうかだけ持てばよい。
+let flowUnsaved = false, flowInFlight = 0;
+function persistFlow() {
+  flowUnsaved = true;
+  flowInFlight++;
+  mutate({ type: 'flow/set', mode: timer.mode, cycle: timer.cycle }).then(res => {
+    flowInFlight--;
+    // 送信中に別の遷移が送られていれば、その応答に任せる(古い応答で済んだことにしない)。
+    if (!failed(res) && flowInFlight === 0) flowUnsaved = false;
+  });
+}
+
+function retryUnsaved() {
+  for (const [action, inFlight] of unsavedSessions) if (!inFlight) sendSession(action);
+  if (flowUnsaved && flowInFlight === 0) persistFlow();
 }
 
 // フォーカス対象だけは応答を待たずに覚えておく。表示の遅れは往復のぶん(ミリ秒)で
@@ -657,10 +678,6 @@ function stopEarly() {
 }
 
 // 自動サイクルの進行(次フェーズ・長休憩までのカウント)を永続化する
-function persistFlow() {
-  mutate({ type: 'flow/set', mode: timer.mode, cycle: timer.cycle });
-}
-
 // 実行中セッション(フォーカス/休憩)を記録に積む(1分未満の中断は記録しない)
 // sync=true は終了時(beforeunload)専用。レンダラが破棄される前に書き込みを終える
 // 必要があり、応答は使えない(失敗と原本の退避は main がダイアログで知らせる)。
@@ -1445,7 +1462,10 @@ document.querySelectorAll('.modal-backdrop').forEach(m => {
 // 残るのはこの打ち切り記録だけで、終了(Tray「終了」/Cmd+Q)でレンダラが破棄される
 // 前に書き終えるため同期 IPC でブロッキングする。
 window.addEventListener('beforeunload', () => {
-  for (const action of unsavedSessions.splice(0)) window.api.mutateSync(action);
+  // 送信中のものも含めて送る(失敗の応答はもう受け取れない。重複は main が弾く)。
+  for (const action of unsavedSessions.keys()) window.api.mutateSync(action);
+  unsavedSessions.clear();
+  if (flowUnsaved) window.api.mutateSync({ type: 'flow/set', mode: timer.mode, cycle: timer.cycle });
   if (timer.current) recordSession(false, true);
 });
 

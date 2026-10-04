@@ -433,7 +433,7 @@ function closeSegment() {
   const c = timer.current;
   if (!c) return;
   const durMs = pomoElapsedMs() - c.segStartMs;
-  if (durMs >= 1000) c.segments.push({ taskId: c.segTaskId, durationSec: Math.round(durMs / 1000) });
+  if (durMs >= 1000) c.segments.push({ taskId: c.segTaskId, durationSec: Math.round(durMs / 1000), focusSeq: c.segFocusSeq });
 }
 
 // タスク切り替え地点でセグメントを区切る(タイマーは止めない)
@@ -443,6 +443,7 @@ function switchSegment(taskId) {
   closeSegment();
   c.segTaskId = taskId || null;
   c.segStartMs = pomoElapsedMs();
+  c.segFocusSeq = undefined;        // 要求中の値で付けたなら mutateFocus が印を付ける
 }
 
 // フォーカス対象を変える意図を送る(選択だけでなく、選択中のタスクの完了・削除も
@@ -451,11 +452,21 @@ function switchSegment(taskId) {
 // 要求ごとに番号を振る。A を選んで応答を待つ間に B を選んだとき、先に返った A の
 // 応答で B の保留を消すと、その隙に始めたセッションが A に付いてしまう。
 let focusSeq = 0;
+// まだ決着していないフォーカスの要求の番号。その値で付けた内訳には番号の印が付く
+// (segFocusSeq / segments[].focusSeq)。要求が失敗したり正規化で外れたりしたら、
+// 決着後の正本の選択に付け直す。応答待ちの間に終わったセッションの記録も、
+// 印の付いた内訳が決着するまで送らずに待つ(送ってしまうと後から直せない)。
+const unsettledFocus = new Set();
 function mutateFocus(taskId, action) {
   const seq = ++focusSeq;
   pendingTaskId = taskId || null;
+  unsettledFocus.add(seq);
+  const c = timer.current;
+  if (c && c.mode === 'work' && c.segTaskId === pendingTaskId) c.segFocusSeq = seq;
   return mutate(action).then(res => {
     if (seq === focusSeq) pendingTaskId = undefined;   // 最後の要求が決着したときだけ外す
+    unsettledFocus.delete(seq);
+    settleFocusSegments(seq, res && res.snapshot ? res.snapshot.selectedTaskId : data.selectedTaskId);
     // 実行中の付け先を正本のフォーカスに合わせる。要求どおりになるとは限らない:
     // 保存に失敗すれば元の選択に戻り、成功しても、応答待ちの間にそのタスクが
     // 完了・削除されていれば正規化で選択は外れる。合わせないと、正本の選択とは
@@ -467,6 +478,18 @@ function mutateFocus(taskId, action) {
   });
 }
 const failed = res => !res || res.ok === false;
+
+// 要求 seq の値で付けた内訳を、決着後の正本の選択(actual)に付け直す。要求どおりなら
+// 何も変わらない。実行中セッションの開いている区間も、終わって送信待ちの記録も対象。
+function settleFocusSegments(seq, actual) {
+  const fix = c => {
+    for (const s of c.segments) if (s.focusSeq === seq) { s.taskId = actual || null; s.focusSeq = undefined; }
+    if (c.segFocusSeq === seq) { c.segTaskId = actual || null; c.segFocusSeq = undefined; }
+  };
+  if (timer.current) fix(timer.current);
+  for (const r of heldRecords) fix(r.c);
+  flushHeldRecords();
+}
 
 // 完了状態の要求中の値(id → { completed, seq })。応答までの間は行がまだ未完了の
 // まま描かれているので、完了を送ったタスクの行を押すと、main では正規化で外れる
@@ -652,6 +675,8 @@ function startPauseResume() {
       intStartAt: Date.now(),
       segments: [],
       segTaskId: timer.mode === 'work' ? focusTaskId() : null,
+      // 要求中のフォーカスで付けたなら、その要求の番号を印として持つ
+      segFocusSeq: timer.mode === 'work' && pendingTaskId !== undefined ? focusSeq : undefined,
       segStartMs: 0
     };
     timer.lastTickAt = Date.now();
@@ -719,9 +744,29 @@ function recordSession(completed, sync) {
   const elapsedSec = Math.round(activeMs / 1000);
   if (!completed && elapsedSec < 60) return;
 
+  if (c.mode === 'work') closeSegment();
+  const rec = { c, completed, elapsedSec, endedAt: c.intervals.length ? c.intervals[c.intervals.length - 1].endedAt : new Date().toISOString() };
+  // 決着していないフォーカスの要求で付けた内訳があれば、決着まで送らずに持つ。
+  // 終了時(sync)は待てないので、その時点の付け先のまま送る。
+  if (sync) window.api.mutateSync(sessionAction(rec));
+  else if (c.segments.some(s => unsettledFocus.has(s.focusSeq))) heldRecords.push(rec);
+  else sendSession(sessionAction(rec));
+}
+
+// フォーカスの要求の決着待ちで送っていない記録。
+const heldRecords = [];
+function flushHeldRecords() {
+  for (let i = heldRecords.length - 1; i >= 0; i--) {
+    const rec = heldRecords[i];
+    if (rec.c.segments.some(s => unsettledFocus.has(s.focusSeq))) continue;
+    heldRecords.splice(i, 1);
+    sendSession(sessionAction(rec));
+  }
+}
+
+function sessionAction({ c, completed, elapsedSec, endedAt }) {
   let taskTimes = [], taskIds = [];
   if (c.mode === 'work') {
-    closeSegment();
     // セグメントをタスク別に集計
     const byTask = new Map();
     for (const s of c.segments) byTask.set(s.taskId, (byTask.get(s.taskId) || 0) + s.durationSec);
@@ -733,13 +778,13 @@ function recordSession(completed, sync) {
       if (extra) extra.push({ sessionId: c.id, indexes: [i] });
     });
   }
-  const action = {
+  return {
     type: 'session/add',
     session: {
       id: c.id,
       mode: c.mode,
       startedAt: c.startedAt,
-      endedAt: c.intervals.length ? c.intervals[c.intervals.length - 1].endedAt : new Date().toISOString(),
+      endedAt,
       durationSec: elapsedSec,
       completed,
       intervals: c.intervals,
@@ -747,8 +792,6 @@ function recordSession(completed, sync) {
       taskTimes
     }
   };
-  if (sync) window.api.mutateSync(action);
-  else sendSession(action);
 }
 
 function finishSession(completed) {
@@ -1354,8 +1397,15 @@ function shiftTimelineDay(days) {
 
 /* ============ トースト ============ */
 let toastTimer = null;
+// 表示中の操作付きトースト(取り消しなど)。トーストは一枚なので、その間に届いた
+// 通知(保存失敗など)で上書きすると、操作できる唯一のボタンが消える。操作の
+// 期限までは、新しい文言に差し替えてもボタンは残す。
+let toastAction = null;            // { action, until }
 function toast(msg, action) {
   const el = $('#toast');
+  const now = Date.now();
+  if (!action && toastAction && toastAction.until > now) action = toastAction.action;
+  else toastAction = action ? { action, until: now + 6000 } : null;
   el.textContent = msg;
   if (action) {
     const btn = document.createElement('button');
@@ -1364,6 +1414,7 @@ function toast(msg, action) {
     btn.addEventListener('click', () => {
       clearTimeout(toastTimer);
       el.hidden = true;
+      toastAction = null;
       action.fn();
     });
     el.appendChild(btn);
@@ -1373,7 +1424,9 @@ function toast(msg, action) {
   void el.offsetWidth;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, action ? 6000 : 3000);
+  // 操作付きは操作の期限まで出す(通知で差し替えても期限は延ばさない)。
+  const ms = toastAction ? Math.max(3000, toastAction.until - now) : 3000;
+  toastTimer = setTimeout(() => { el.hidden = true; toastAction = null; }, ms);
 }
 
 /* ============ 音源試聴 ============ */
@@ -1497,6 +1550,7 @@ window.addEventListener('beforeunload', () => {
   // 送信中のものも含めて送る(失敗の応答はもう受け取れない。重複は main が弾く)。
   for (const action of unsavedSessions.keys()) window.api.mutateSync(action);
   unsavedSessions.clear();
+  for (const rec of heldRecords.splice(0)) window.api.mutateSync(sessionAction(rec));
   if (flowUnsaved) window.api.mutateSync({ type: 'flow/set', mode: timer.mode, cycle: timer.cycle });
   if (timer.current) recordSession(false, true);
 });

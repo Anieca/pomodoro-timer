@@ -38,6 +38,8 @@ import * as os from 'node:os';
 //  AS) クイック追加で応答前に二度確定しても、タスクは一つだけ作られる
 //  AT) 削除の応答前に取り消してすぐ終了しても、取り消しは効く
 //  AU) 取り消しの保存に失敗しても、取り消しをもう一度出して戻せる(その間の記録も)
+//  AV) 選択の失敗が返る前に終わったセッションは、正本の選択に付いて記録される
+//  AW) 取り消しのトーストのあとに保存失敗の通知が来ても、取り消しのボタンは残る
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -971,6 +973,59 @@ for (const fail of [false, true]) {
   assert(offered, 'AU: 失敗したら取り消しをもう一度出す');
   assert(saved.tasks.some(t => t.id === 'au1'), 'AU: もう一度押せばタスクが戻る');
   assert(rec && rec.taskIds.includes('au1'), 'AU: 削除から取り消しまでの記録も戻る');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AV: 選択の失敗が返る前に終わったセッションも正本の選択に付く ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(async ts => {
+    for (const t of ts) await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: 'av1' });
+    startPauseResume();
+  }, [task('av1', '元のタスク'), task('av2', '選び損ねるタスク')]);
+  await page.waitForTimeout(1200);
+  await slowThenFailNextWrite(app, 2500);
+  await page.evaluate(async () => {
+    selectTask('av2');                       // 保存は遅れて失敗する
+    await new Promise(r => setTimeout(r, 1200));
+    finishSession(true);                     // 失敗が返る前に終わる
+  });
+  await page.waitForTimeout(3500);
+  const rec = readData(ud).sessions.at(-1);
+  console.log('AV: record=', JSON.stringify(rec && rec.taskTimes), 'errors=', errors.filter(e => !/保存/.test(e)));
+  assert(rec && rec.taskIds.includes('av1'), 'AV: 記録は書かれ、元のタスクに付く');
+  assert(rec && !rec.taskIds.includes('av2') && rec.taskTimes.every(tt => tt.taskId !== 'av2'), 'AV: 選べなかったタスクには付かない');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AW: 取り消しのボタンは保存失敗の通知で消えない ===== */
+{
+  const ud = mkdir();
+  const { app, page } = await launch(ud);
+  await page.evaluate(async ts => { for (const t of ts) await mutate({ type: 'task/add', task: t }); },
+    [task('aw1', '名前を変えるタスク'), task('aw2', '消すタスク')]);
+  await page.waitForTimeout(200);
+  await slowThenFailNextWrite(app, 600);
+  await page.evaluate(() => {
+    mutate({ type: 'task/rename', id: 'aw1', title: '新しい名前' });   // 遅れて失敗する
+    deleteTask('aw2');                                                 // その後ろで通る
+  });
+  await page.waitForTimeout(1500);
+  const toastNow = await page.evaluate(() => {
+    const el = document.querySelector('#toast');
+    return { hidden: el.hidden, text: el.textContent, hasAction: !!el.querySelector('.toast-action') };
+  });
+  await page.evaluate(() => { const b = document.querySelector('#toast .toast-action'); if (b) b.click(); });
+  await page.waitForTimeout(500);
+  const kept = readData(ud).tasks.some(t => t.id === 'aw2');
+  console.log('AW: toast=', JSON.stringify(toastNow), 'restored=', kept);
+  assert(!toastNow.hidden && /保存に失敗/.test(toastNow.text), 'AW: 保存失敗は通知される');
+  assert(toastNow.hasAction, 'AW: 取り消しのボタンは残る');
+  assert(kept, 'AW: 残ったボタンで取り消せる');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

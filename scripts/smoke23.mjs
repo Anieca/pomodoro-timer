@@ -21,6 +21,7 @@ import * as os from 'node:os';
 //  AB) 応答前に二度押したタスク行の選択は元に戻る
 //  AC) 実行中の選択の保存に失敗したら、付け先を正本の選択に戻す
 //  AD) 元に戻すの応答待ちにセッションが終わっても、戻せたなら実働はそのタスクに付く
+//  AE) 選択が成功しても正規化で外れたら、付け先もそれに合わせる
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -480,6 +481,32 @@ for (const fail of [false, true]) {
     assert(!saved.tasks.some(t => t.id === 'ad1'), 'AD(失敗): タスクは削除されたまま');
     assert(!rec.taskIds.includes('ad1') && rec.taskTimes.every(tt => tt.taskId !== 'ad1'), 'AD(失敗): 記録は削除済みのタスクを指さない');
   }
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AE: 選択が正規化で外れたら付け先も合わせる ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(async ts => {
+    for (const t of ts) await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: 'ae1' });
+    startPauseResume();
+  }, [task('ae1', '作業中のタスク'), task('ae2', '別の窓で完了されるタスク')]);
+  await slowWrites(app, 400);
+  // ae2 の完了が先に main に届き、その後に届いた選択は正規化で外れる(保存自体は成功)。
+  const after = await page.evaluate(async () => {
+    window.api.mutate({ type: 'task/setDone', id: 'ae2', completed: true, at: new Date().toISOString() });
+    selectTask('ae2');
+    await new Promise(r => setTimeout(r, 1500));
+    return { seg: timer.current.segTaskId, selected: data.selectedTaskId, focus: focusTaskId() };
+  });
+  console.log('AE: after normalized select=', JSON.stringify(after), 'errors=', errors);
+  assert(errors.length === 0, 'AE: コンソール/ページエラーが出ない');
+  assert(after.selected === null && after.focus === null, 'AE: 完了したタスクは選択されない');
+  assert(after.seg === null, 'AE: 付け先も完了したタスクに残らない');
+  await page.evaluate(() => clearInterval(timer.intervalId));
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

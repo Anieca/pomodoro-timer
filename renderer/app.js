@@ -396,11 +396,13 @@ function mutateFocus(taskId, action) {
   pendingTaskId = taskId || null;
   return mutate(action).then(res => {
     if (seq === focusSeq) pendingTaskId = undefined;   // 最後の要求が決着したときだけ外す
-    // 保存に失敗するとフォーカスは正本の値に戻る。実行中の付け先も合わせないと、
-    // 正本の選択とは別のタスク(またはタスクなし)に以降の実働が付き、次の保存で
-    // その帰属が確定してしまう。応答待ちの間に始まったセッションもここで拾う。
-    // 後の要求がまだ保留中なら focusTaskId() はその値なので、付け先は動かない。
-    if (failed(res)) switchSegment(focusTaskId());
+    // 実行中の付け先を正本のフォーカスに合わせる。要求どおりになるとは限らない:
+    // 保存に失敗すれば元の選択に戻り、成功しても、応答待ちの間にそのタスクが
+    // 完了・削除されていれば正規化で選択は外れる。合わせないと、正本の選択とは
+    // 別のタスクに以降の実働が付き、次の保存でその帰属が確定してしまう。
+    // 応答待ちの間に始まったセッションもここで拾う。後の要求がまだ保留中なら
+    // focusTaskId() はその値なので、付け先は動かない。
+    switchSegment(focusTaskId());
     return res;
   });
 }

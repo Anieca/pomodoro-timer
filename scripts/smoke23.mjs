@@ -34,6 +34,7 @@ import * as os from 'node:os';
 //  AO) 書けなかったタイマーの進行状態は、書けるようになったら送り直す
 //  AP) 記録の失敗の応答を待つ間に終了しても、記録は終了時に書かれる
 //  AQ) 設定を閉じてすぐ開始しても、変えた長さで始まる
+//  AR) 書けていない記録が削除のあとに書かれても、取り消しでそのタスクに戻る
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -858,6 +859,34 @@ for (const fail of [false, true]) {
   assert(errors.length === 0, 'AQ: コンソール/ページエラーが出ない');
   assert(totalMin === 50 && saved === 50, 'AQ: 応答前に開始しても新しい作業時間(50分)で始まる');
   await page.evaluate(() => clearInterval(timer.intervalId));
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AR: 送り直し待ちの記録も取り消しで戻る ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(async t => {
+    await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: t.id });
+    startPauseResume();
+  }, task('ar1', '記録が書けなかったタスク'));
+  await page.waitForTimeout(1200);
+  await setWritesFailing(app, true);
+  await page.evaluate(() => finishSession(true));   // 記録は送り直し待ちに残る
+  await page.waitForTimeout(500);
+  await setWritesFailing(app, false);
+  // 削除が通ると、その応答で送り直された記録は削除済みのタスクを指さない形で書かれる。
+  await page.evaluate(() => deleteTask('ar1'));
+  await page.waitForTimeout(800);
+  const stripped = readData(ud).sessions.at(-1);
+  await page.evaluate(() => document.querySelector('#toast .toast-action').click());
+  await page.waitForTimeout(500);
+  const rec = readData(ud).sessions.at(-1);
+  console.log('AR: stripped=', JSON.stringify(stripped && stripped.taskTimes), 'restored=', JSON.stringify(rec && rec.taskTimes), 'errors=', errors.filter(e => !/保存/.test(e)));
+  assert(stripped && !stripped.taskIds.includes('ar1'), 'AR: 削除のあとに書かれた記録は削除済みのタスクを指さない');
+  assert(rec && rec.taskIds.includes('ar1') && rec.taskTimes.some(tt => tt.taskId === 'ar1'), 'AR: 取り消しでその記録もタスクに戻る');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

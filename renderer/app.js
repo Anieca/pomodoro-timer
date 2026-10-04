@@ -515,7 +515,15 @@ function deleteTask(id) {
   const t = data.tasks.find(t => t.id === id);
   if (!t || pendingDeletes.has(id)) return;
   pendingDeletes.add(id);
-  undoablePatches.set(id, []);
+  // まだ書けていない記録(送り直し待ち)も、削除のあとに届けば session/add で参照が
+  // 外れる。main の控えには入らないので、ここで位置を控えに足しておく。
+  const queued = [];
+  for (const action of unsavedSessions.keys()) {
+    const indexes = [];
+    (action.session.taskTimes || []).forEach((tt, i) => { if (tt.taskId === id) indexes.push(i); });
+    if (indexes.length) queued.push({ sessionId: action.session.id, indexes });
+  }
+  undoablePatches.set(id, queued);
   renderAll();                      // 応答まで行を隠す(残すと二度目の操作を受けてしまう)
   const wasSelected = focusTaskId() === id;
   // 実行中セッションの内訳はここでは匿名化しない。応答前に匿名化すると、その間に

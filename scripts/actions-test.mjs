@@ -120,6 +120,18 @@ const base = () => ({
 
   const a = applyAction(base(), { type: 'session/add', session: { id: 's2', mode: 'short', durationSec: 300, startedAt: iso(10), endedAt: iso(11) } });
   eq(a.sessions.map(x => x.id), ['s1', 's2'], 'session/add: 末尾に積む');
+
+  // 組んだ時点では在ったが、届いた時点では正本に無いタスク(戻せなかった取り消しなど)。
+  const gone = applyAction(base(), { type: 'session/add', session: {
+    id: 's3', mode: 'work', durationSec: 900, startedAt: iso(11), endedAt: iso(12),
+    taskIds: ['t1', 'gone'],
+    taskTimes: [{ taskId: 't1', durationSec: 300 }, { taskId: null, durationSec: 200 }, { taskId: 'gone', durationSec: 400 }]
+  } });
+  const s3 = gone.sessions[1];
+  eq(s3.taskIds, ['t1'], 'session/add: 正本に無いタスクを taskIds から外す');
+  eq(s3.taskTimes, [{ taskId: 't1', durationSec: 300 }, { taskId: null, durationSec: 600 }], 'session/add: 外した内訳は「タスクなし」に合算する');
+  const known = { id: 's4', mode: 'work', taskIds: ['t1'], taskTimes: [{ taskId: 't1', durationSec: 60 }] };
+  assert(applyAction(base(), { type: 'session/add', session: known }).sessions[1] === known, 'session/add: 参照が全部正本にあれば手を加えない');
 }
 
 /* ===== 未知の意図 ===== */

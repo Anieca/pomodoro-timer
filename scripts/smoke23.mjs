@@ -19,6 +19,8 @@ import * as os from 'node:os';
 //  Z) 元に戻すの保存に失敗したら、内訳を削除済みのタスクに付け直さない
 //  AA) 応答前に二度押したノイズの切り替えは元に戻る
 //  AB) 応答前に二度押したタスク行の選択は元に戻る
+//  AC) 実行中の選択の保存に失敗したら、付け先を正本の選択に戻す
+//  AD) 元に戻すの応答待ちにセッションが終わっても、戻せたなら実働はそのタスクに付く
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -421,6 +423,63 @@ const failNextWrite = app => app.evaluate(() => {
   console.log('AB: saved=', saved, 'onScreen=', JSON.stringify(onScreen), 'errors=', errors);
   assert(errors.length === 0, 'AB: コンソール/ページエラーが出ない');
   assert(saved === null && onScreen.selected === null && onScreen.focus === null, 'AB: 二度押したら未選択に戻る');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AC: 実行中の選択の保存に失敗したら付け先を戻す ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(async ts => {
+    for (const t of ts) await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: 'ac1' });
+    startPauseResume();
+  }, [task('ac1', '元のタスク'), task('ac2', '選び直すタスク')]);
+  await failNextWrite(app);
+  const after = await page.evaluate(async () => {
+    selectTask('ac2');
+    await new Promise(r => setTimeout(r, 500));
+    return { seg: timer.current.segTaskId, selected: data.selectedTaskId, focus: focusTaskId() };
+  });
+  console.log('AC: after failed select=', JSON.stringify(after), 'errors=', errors);
+  assert(after.selected === 'ac1' && after.focus === 'ac1', 'AC: 正本の選択は元のまま');
+  assert(after.seg === 'ac1', 'AC: 実働の付け先も元のタスクに戻る');
+  await page.evaluate(() => clearInterval(timer.intervalId));
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AD: 元に戻すの応答待ちにセッションが終わっても実働を失わない ===== */
+for (const fail of [false, true]) {
+  const label = fail ? 'AD(失敗)' : 'AD';
+  const ud = mkdir();
+  const { app, page } = await launch(ud);
+  await page.evaluate(async t => {
+    await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: t.id });
+    startPauseResume();
+  }, task('ad1', '戻すタスク'));
+  await page.waitForTimeout(1200);           // 1 秒以上の区間でないと内訳に積まれない
+  await page.evaluate(() => deleteTask('ad1'));
+  await page.waitForTimeout(300);
+  if (fail) await failNextWrite(app); else await slowWrites(app, 400);
+  // 取り消しの応答が届く前にセッションを完了させる。
+  await page.evaluate(() => {
+    document.querySelector('#toast .toast-action').click();
+    finishSession(true);
+  });
+  await page.waitForTimeout(1500);
+  const saved = readData(ud);
+  const rec = saved.sessions[saved.sessions.length - 1];
+  console.log(`${label}: tasks=`, JSON.stringify(saved.tasks.map(t => t.id)), 'record=', JSON.stringify({ taskIds: rec.taskIds, taskTimes: rec.taskTimes }));
+  if (!fail) {
+    assert(saved.tasks.some(t => t.id === 'ad1'), 'AD: タスクは戻る');
+    assert(rec.taskIds.includes('ad1') && rec.taskTimes.some(tt => tt.taskId === 'ad1'), 'AD: 応答待ちに終わった記録もそのタスクに付く');
+  } else {
+    assert(!saved.tasks.some(t => t.id === 'ad1'), 'AD(失敗): タスクは削除されたまま');
+    assert(!rec.taskIds.includes('ad1') && rec.taskTimes.every(tt => tt.taskId !== 'ad1'), 'AD(失敗): 記録は削除済みのタスクを指さない');
+  }
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

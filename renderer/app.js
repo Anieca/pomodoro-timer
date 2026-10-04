@@ -396,19 +396,15 @@ function mutateFocus(taskId, action) {
   pendingTaskId = taskId || null;
   return mutate(action).then(res => {
     if (seq === focusSeq) pendingTaskId = undefined;   // 最後の要求が決着したときだけ外す
+    // 保存に失敗するとフォーカスは正本の値に戻る。実行中の付け先も合わせないと、
+    // 正本の選択とは別のタスク(またはタスクなし)に以降の実働が付き、次の保存で
+    // その帰属が確定してしまう。応答待ちの間に始まったセッションもここで拾う。
+    // 後の要求がまだ保留中なら focusTaskId() はその値なので、付け先は動かない。
+    if (failed(res)) switchSegment(focusTaskId());
     return res;
   });
 }
 const failed = res => !res || res.ok === false;
-
-// 保存に失敗してフォーカスが正本の値に戻ったとき、実行中の付け先をそれに合わせる。
-// 付け先を外したまま(null)にしておくと、正本では選択中なのに以降の実働が
-// 「タスクなし」に付き、次の保存でその帰属が確定してしまう。応答待ちの間に
-// 始まったセッションもここで拾う。
-function resyncSegment() {
-  const c = timer.current;
-  if (c && c.segTaskId === null) switchSegment(focusTaskId());
-}
 
 // フォーカス対象タスクの選択(アイドル中=次のポモドーロ用、実行中=即時切り替え)
 function selectTask(taskId) {
@@ -427,8 +423,8 @@ function toggleTaskDone(id, completed) {
   if (!(completed && focusTaskId() === id)) { mutate(action); return; }
   switchSegment(null);
   toast(`「${t.title}」を完了しました 🎉`);
-  // 保存できなければ正本ではまだ選択中で未完了のまま。付け先もそれに戻す。
-  mutateFocus(null, action).then(res => { if (failed(res)) resyncSegment(); });
+  // 保存できなければ正本ではまだ選択中で未完了のまま。付け先は mutateFocus が戻す。
+  mutateFocus(null, action);
 }
 
 function deleteTask(id) {
@@ -471,16 +467,21 @@ function deleteTask(id) {
   const sent = undo.wasSelected ? mutateFocus(null, action) : mutate(action);
   sent.then(res => {
     if (!failed(res)) return;
-    // 削除できなければタスクは正本に残っている。匿名化した内訳と付け先を戻す
-    // (次のセッションには手を出さない。付け先の再同期は応答待ちの間に始まったものも拾う)。
+    // 削除できなければタスクは正本に残っている。匿名化した内訳を戻す(付け先は
+    // mutateFocus が戻す)。終わったセッションの記録は送信済みなので手を出さない。
     if (timer.current === session) for (const s of undo.segPatches) s.taskId = id;
-    resyncSegment();
   });
   toast(`「${t.title}」を削除しました`, { label: '元に戻す', fn: () => restoreTask(undo) });
 }
 
 function restoreTask(u) {
+  // 内訳は応答を待たずに付け直す。待つと、その間にセッションが終わったとき、
+  // 記録は匿名のまま送られ(タスク別に合算済みなので後から切り分けられない)、
+  // タスクは戻っても実働が失われる。main は意図を受け取った順に適用するので、
+  // 戻せていれば記録はそのタスクに付き、戻せなければ session/add がまだ無い
+  // タスクへの参照を外す。
   const session = timer.current;
+  for (const s of u.segPatches) s.taskId = u.task.id;   // 実行中セッションはレンダラ側の状態
   mutate({
     type: 'task/restore',
     task: u.task,
@@ -488,10 +489,12 @@ function restoreTask(u) {
     patches: u.patches,
     select: u.wasSelected && !u.task.completed
   }).then(res => {
-    // 正本に戻ってから実行中セッションの内訳と計測先を合わせる。戻せなかったときに
-    // 先に動かすと、削除されたままのタスクを指す内訳が次の保存で残ってしまう。
-    if (failed(res)) return;
-    if (timer.current === session) for (const s of u.segPatches) s.taskId = u.task.id;   // 実行中セッションはレンダラ側の状態
+    // 戻せなかったら、まだ実行中のセッションの内訳を匿名に戻す。
+    if (failed(res)) {
+      if (timer.current === session) for (const s of u.segPatches) s.taskId = null;
+      return;
+    }
+    // 選択が戻ってから計測先を合わせる(戻せなかったときに動かすと実働の付け先がずれる)
     if (u.wasSelected) switchSegment(focusTaskId());
   });
 }

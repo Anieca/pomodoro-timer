@@ -53,6 +53,26 @@ function attachTask(sessions, id, patches) {
   });
 }
 
+// 記録が正本に無いタスクを指していたら外す。レンダラは記録を組んだ時点の手元で
+// 内訳を付けるので、その間に削除されたタスクや、戻すつもりで付け直したが戻せな
+// かったタスクを指しうる。外した内訳は「タスクなし」に寄せて合算する(削除と同じ扱い)。
+function keepKnownTasks(session, tasks) {
+  const known = new Set(tasks.map(t => asObject(t).id));
+  const taskTimes = asArray(session.taskTimes);
+  if (taskTimes.every(tt => { const id = asObject(tt).taskId; return id == null || known.has(id); })) return session;
+  const byTask = new Map();
+  for (const tt of taskTimes) {
+    const o = asObject(tt);
+    const id = o.taskId != null && known.has(o.taskId) ? o.taskId : null;
+    byTask.set(id, (byTask.get(id) || 0) + (Number(o.durationSec) || 0));
+  }
+  return {
+    ...session,
+    taskIds: asArray(session.taskIds).filter(id => known.has(id)),
+    taskTimes: [...byTask.entries()].map(([taskId, durationSec]) => ({ taskId, durationSec }))
+  };
+}
+
 const replaceTask = (tasks, id, patch) => tasks.map(t => (asObject(t).id === id ? { ...t, ...patch } : t));
 
 // 意図を適用した新しい状態を返す。未知の意図では null を返し、呼び出し元
@@ -132,7 +152,7 @@ function applyAction(state, action) {
       return { ...s, timer: { mode: a.mode, cycle: a.cycle } };
 
     case 'session/add':
-      return { ...s, sessions: [...sessions, asObject(a.session)] };
+      return { ...s, sessions: [...sessions, keepKnownTasks(asObject(a.session), tasks)] };
 
     default:
       return null;

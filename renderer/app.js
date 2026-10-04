@@ -408,8 +408,18 @@ function mutateFocus(taskId, action) {
 }
 const failed = res => !res || res.ok === false;
 
+// 完了状態の要求中の値(id → { completed, seq })。応答までの間は行がまだ未完了の
+// まま描かれているので、完了を送ったタスクの行を押すと、main では正規化で外れる
+// 選択がレンダラでは付け先になり、応答前にセッションが終わればその帰属が残る。
+const pendingDone = new Map();
+let doneSeq = 0;
+const isDone = t => (pendingDone.has(t.id) ? pendingDone.get(t.id).completed : t.completed);
+
 // フォーカス対象タスクの選択(アイドル中=次のポモドーロ用、実行中=即時切り替え)
 function selectTask(taskId) {
+  // 完了した(または完了を送った)タスクは選べない。main でも正規化で外れる。
+  const t = taskId && data.tasks.find(t => t.id === taskId);
+  if (t && isDone(t)) return;
   switchSegment(taskId);            // 実行中セッションの内訳はレンダラ側の状態
   mutateFocus(taskId, { type: 'task/select', id: taskId });
 }
@@ -419,14 +429,17 @@ function selectTask(taskId) {
 function toggleTaskDone(id, completed) {
   const t = data.tasks.find(t => t.id === id);
   if (!t) return;
-  if (completed === undefined) completed = !t.completed;
+  if (completed === undefined) completed = !isDone(t);
   const action = { type: 'task/setDone', id, completed, at: completed ? new Date().toISOString() : null };
+  const seq = ++doneSeq;
+  pendingDone.set(id, { completed, seq });
+  const settled = () => { if (pendingDone.has(id) && pendingDone.get(id).seq === seq) pendingDone.delete(id); };
   // 完了したら選択解除(完了までの時間はセグメントとして記録済み)
-  if (!(completed && focusTaskId() === id)) { mutate(action); return; }
+  if (!(completed && focusTaskId() === id)) { mutate(action).then(settled); return; }
   switchSegment(null);
   toast(`「${t.title}」を完了しました 🎉`);
   // 保存できなければ正本ではまだ選択中で未完了のまま。付け先は mutateFocus が戻す。
-  mutateFocus(null, action);
+  mutateFocus(null, action).then(settled);
 }
 
 function deleteTask(id) {
@@ -482,22 +495,19 @@ function restoreTask(u) {
   // タスクは戻っても実働が失われる。main は意図を受け取った順に適用するので、
   // 戻せていれば記録はそのタスクに付き、戻せなければ session/add がまだ無い
   // タスクへの参照を外す。
-  const session = timer.current;
+  // 選択も戻すなら、フォーカスの要求として送る。応答までの間も戻したタスクが
+  // フォーカス対象になり、その間の実働(や間に始めたセッション)も匿名にならない。
+  // 付け先は mutateFocus が決着後に正本のフォーカスへ合わせる。
   for (const s of u.segPatches) s.taskId = u.task.id;   // 実行中セッションはレンダラ側の状態
-  mutate({
-    type: 'task/restore',
-    task: u.task,
-    index: u.index,
-    patches: u.patches,
-    select: u.wasSelected && !u.task.completed
-  }).then(res => {
-    // 戻せなかったら、まだ実行中のセッションの内訳を匿名に戻す。
-    if (failed(res)) {
-      if (timer.current === session) for (const s of u.segPatches) s.taskId = null;
-      return;
-    }
-    // 選択が戻ってから計測先を合わせる(戻せなかったときに動かすと実働の付け先がずれる)
-    if (u.wasSelected) switchSegment(focusTaskId());
+  const select = u.wasSelected && !u.task.completed;
+  const action = { type: 'task/restore', task: u.task, index: u.index, patches: u.patches, select };
+  if (select) switchSegment(u.task.id);
+  (select ? mutateFocus(u.task.id, action) : mutate(action)).then(res => {
+    // 戻せなかったら、実行中のセッションでそのタスクを指す内訳を匿名に戻す
+    // (控えていた内訳に加え、応答待ちの間に付けた分も)。終わった記録は送信済みで、
+    // まだ無いタスクへの参照は session/add が外す。
+    if (!failed(res) || !timer.current) return;
+    for (const s of timer.current.segments) if (s.taskId === u.task.id) s.taskId = null;
   });
 }
 

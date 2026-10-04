@@ -22,6 +22,8 @@ import * as os from 'node:os';
 //  AC) 実行中の選択の保存に失敗したら、付け先を正本の選択に戻す
 //  AD) 元に戻すの応答待ちにセッションが終わっても、戻せたなら実働はそのタスクに付く
 //  AE) 選択が成功しても正規化で外れたら、付け先もそれに合わせる
+//  AF) 選択中だったタスクを元に戻す応答待ちの間も、実働はそのタスクに付く(失敗なら外す)
+//  AG) 完了を送ったタスクの行を応答前に押しても、付け先にならない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -507,6 +509,78 @@ for (const fail of [false, true]) {
   assert(after.selected === null && after.focus === null, 'AE: 完了したタスクは選択されない');
   assert(after.seg === null, 'AE: 付け先も完了したタスクに残らない');
   await page.evaluate(() => clearInterval(timer.intervalId));
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AF: 選択中だったタスクの取り消し待ちの間も実働はそのタスクに付く ===== */
+for (const fail of [false, true]) {
+  const label = fail ? 'AF(失敗)' : 'AF';
+  const ud = mkdir();
+  const { app, page } = await launch(ud);
+  await page.evaluate(async t => {
+    await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: t.id });
+    startPauseResume();
+  }, task('af1', '戻すタスク'));
+  await page.waitForTimeout(300);
+  await page.evaluate(() => deleteTask('af1'));
+  await page.waitForTimeout(300);
+  if (fail) await failNextWrite(app); else await slowWrites(app, 1500);
+  const pending = await page.evaluate(() => {
+    document.querySelector('#toast .toast-action').click();
+    return { focus: focusTaskId(), seg: timer.current.segTaskId };
+  });
+  await page.waitForTimeout(1200);           // 応答待ちの区間を 1 秒以上にする(内訳に積まれる長さ)
+  // 応答前にセッションを完了させる(成功時)。失敗時は応答後の内訳を見る。
+  const after = await page.evaluate(async fail => {
+    if (!fail) { finishSession(true); return null; }
+    closeSegment();
+    return { seg: timer.current.segTaskId, segs: timer.current.segments.map(s => s.taskId) };
+  }, fail);
+  await page.waitForTimeout(800);
+  const saved = readData(ud);
+  if (!fail) {
+    const rec = saved.sessions[saved.sessions.length - 1];
+    console.log(`${label}: pending=`, JSON.stringify(pending), 'record=', JSON.stringify(rec.taskTimes));
+    assert(pending.focus === 'af1' && pending.seg === 'af1', 'AF: 応答待ちの間もフォーカスと付け先は戻したタスク');
+    assert(rec.taskTimes.every(tt => tt.taskId === 'af1'), 'AF: 応答待ちの間の実働もそのタスクに付く');
+  } else {
+    console.log(`${label}: after=`, JSON.stringify(after));
+    assert(after.seg === null, 'AF(失敗): 付け先は外れる');
+    assert(after.segs.every(id => id === null), 'AF(失敗): 削除済みのタスクを指す内訳を残さない');
+    await page.evaluate(() => clearInterval(timer.intervalId));
+  }
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AG: 完了を送ったタスクの行を押しても付け先にならない ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(async ts => {
+    for (const t of ts) await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: 'ag1' });
+    startPauseResume();
+  }, [task('ag1', '作業中のタスク'), task('ag2', '完了するタスク')]);
+  await slowWrites(app, 2500);
+  const pending = await page.evaluate(async () => {
+    toggleTaskDone('ag2', true);
+    // 行は応答まで未完了のまま描かれている。
+    [...document.querySelectorAll('#taskList .task-item')].find(li => li.textContent.includes('完了するタスク')).click();
+    const r = { focus: focusTaskId(), seg: timer.current.segTaskId };
+    await new Promise(r => setTimeout(r, 1200));   // 内訳に積まれる長さ(1 秒以上)にする
+    finishSession(true);                    // 応答前に記録を送る
+    return r;
+  });
+  await page.waitForTimeout(6000);
+  const saved = readData(ud);
+  const rec = saved.sessions[saved.sessions.length - 1];
+  console.log('AG: pending=', JSON.stringify(pending), 'record taskIds=', JSON.stringify(rec.taskIds), 'errors=', errors);
+  assert(errors.length === 0, 'AG: コンソール/ページエラーが出ない');
+  assert(pending.focus === 'ag1' && pending.seg === 'ag1', 'AG: 完了を送ったタスクは選べない');
+  assert(!rec.taskIds.includes('ag2'), 'AG: 記録は完了したタスクに付かない');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

@@ -5,7 +5,7 @@ import * as os from 'node:os';
 
 // レビュー指摘の修正検証:
 //  P1) スリープ/スロットリングでタイマーが超過しても実時間(durationSec)が膨らまない
-//  P2) 実行中に選択タスクを削除しても、進行中セグメントに削除済みIDが残らない
+//  P2) 実行中に選択タスクを削除しても、記録に削除済みIDが残らない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
 
@@ -39,7 +39,7 @@ const work1 = (saved1.sessions || []).find(s => s.mode === 'work');
 const ivLenMin = work1 && work1.intervals[0]
   ? (new Date(work1.intervals[0].endedAt) - new Date(work1.intervals[0].startedAt)) / 60000 : -1;
 
-// ===== P2: 実行中に選択タスクを削除し、進行中セグメントに削除済みIDが残らない =====
+// ===== P2: 実行中に選択タスクを削除し、記録に削除済みIDが残らない =====
 const delId = await page.evaluate(() => {
   timer.mode = 'work';
   const t = addTask('削除テスト');
@@ -50,17 +50,18 @@ const delId = await page.evaluate(() => {
 await page.waitForTimeout(1300); // closeSegment が区間を積む閾値(>=1s)を超える
 await page.evaluate(id => deleteTask(id), delId);
 // 削除は意図として main を往復してから正本に反映される(レンダラは手元を書き換えない)。
-// 進行中セグメントの匿名化は往復を待たずレンダラ側で済んでいるが、リストから
-// 消えたことは正本が返ってきてから確かめる。
+// 進行中セッションの内訳は、元に戻せるようレンダラでは削除済みIDのまま持つ。
+// 履歴に残らないことは、記録が届いた時点で session/add が外すことで守る。
 await page.waitForFunction(id => !data.tasks.some(x => x.id === id), delId, { timeout: 5000 });
 const seg = await page.evaluate(id => {
   const c = timer.current;
-  return {
-    segTaskId: c ? c.segTaskId : 'no-current',
-    segIds: c ? c.segments.map(s => s.taskId) : [],
-    taskGone: !data.tasks.some(x => x.id === id)
-  };
+  const r = { segTaskId: c ? c.segTaskId : 'no-current', taskGone: !data.tasks.some(x => x.id === id) };
+  finishSession(true);
+  return r;
 }, delId);
+await page.waitForTimeout(500);
+const rec2 = (await page.evaluate(() => window.api.loadData())).sessions.at(-1);
+seg.segIds = rec2 ? rec2.taskTimes.map(tt => tt.taskId).concat(rec2.taskIds) : ['no-record'];
 
 console.log('--- RESULT ---');
 console.log('P1 work durationSec:', work1 && work1.durationSec, '/ interval len(min):', Math.round(ivLenMin));
@@ -73,7 +74,7 @@ assert(work1 && Math.abs(work1.durationSec - 1500) < 60, `P1: durationSec clampe
 assert(Math.abs(ivLenMin - 25) < 1, 'P1: interval end clipped to scheduled end (~25min)');
 assert(seg.taskGone, 'P2: task removed from list');
 assert(seg.segTaskId === null, 'P2: ongoing segment task cleared after delete');
-assert(!seg.segIds.includes(delId), 'P2: no segment retains the deleted task id');
+assert(!seg.segIds.includes(delId), 'P2: the saved record does not retain the deleted task id');
 assert(errors.length === 0, 'no console/page errors');
 
 await app.close();

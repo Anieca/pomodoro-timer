@@ -534,46 +534,38 @@ function deleteTask(id) {
   // 付け先だけは今外す(フォーカスの要求と揃える。失敗なら mutateFocus が戻す)。
   if (timer.current && timer.current.segTaskId === id) switchSegment(null);
   const action = { type: 'task/delete', id };
-  // 取り消しの控えは main が削除の直前の正本から作って応答に添える。押されたのが
-  // 応答前なら、削除が通ったと分かってから送る(通っていなければ戻すものが無い)。
-  // 応答済みならその場で送る。後回しにすると、直後に送られる記録などより後ろに
-  // 並び、main での適用順が入れ替わる。
-  let settled = null;
-  const undoWith = res => {
-    if (failed(res) || !res.undo) return;
-    const extra = undoablePatches.get(id) || [];
-    undoablePatches.delete(id);
-    // 選択されていたかは main の控え(削除直前の正本)で決める。
-    restoreTask({ ...res.undo, patches: res.undo.patches.concat(extra), wasSelected: res.undo.selected });
-  };
-  const sent = (wasSelected ? mutateFocus(null, action) : mutate(action)).then(res => {
-    settled = { res };
+  (wasSelected ? mutateFocus(null, action) : mutate(action)).then(res => {
     pendingDeletes.delete(id);
     if (failed(res)) {
       undoablePatches.delete(id);   // 削除されていなければ取り消すものも無い
       renderAll();                  // 隠していた行を戻す(応答の描画は隠したまま済んでいる)
     }
-    return res;
   });
+  // 取り消しは削除の応答を待たずにその場で送る。控えは main が削除の直前の正本から
+  // 作って持っており、main は受け取った順に適用するので必ず削除のあとに当たる
+  // (削除が失敗していれば何もしない)。待つと、その間にレンダラが閉じたとき
+  // 取り消しが失われ、受け付けたはずの取り消しが効かない。
+  let undone = false;
   toast(`「${t.title}」を削除しました`, { label: '元に戻す', fn: () => {
-    if (settled) undoWith(settled.res); else sent.then(undoWith);
+    if (undone) return;
+    undone = true;
+    const extra = undoablePatches.get(id) || [];
+    undoablePatches.delete(id);
+    restoreTask(id, extra, wasSelected && !isDone(t));
   } });
 }
 
-function restoreTask(u) {
-  // 実行中セッションの内訳は削除時に匿名化していないので、戻すものは無い。
-  // 戻せなかった場合の参照は session/add が外す。
-  // 選択も戻すなら、フォーカスの要求として送る。応答までの間も戻したタスクが
-  // フォーカス対象になり、その間の実働(や間に始めたセッション)も匿名にならない。
-  // 付け先は mutateFocus が決着後に正本のフォーカスへ合わせる。
-  const select = u.wasSelected && !u.task.completed;
-  const action = { type: 'task/restore', task: u.task, index: u.index, patches: u.patches, select };
-  if (select) {
-    switchSegment(u.task.id);
-    mutateFocus(u.task.id, action);
-  } else {
-    mutate(action);
+// 選択も戻るかは main が控え(削除直前の正本)で決める。応答までの間は、削除した
+// ときのフォーカスから見込みで扱う。見込みどおり戻るなら、その間の実働(や間に
+// 始めたセッション)も匿名にならない。外れていても、付け先は決着後に正本の
+// フォーカスへ合わせる(mutateFocus はいつも合わせる)。
+function restoreTask(id, patches, likelySelected) {
+  const action = { type: 'task/undelete', id, patches };
+  if (likelySelected) {
+    switchSegment(id);
+    return mutateFocus(id, action);
   }
+  return mutate(action).then(res => { switchSegment(focusTaskId()); return res; });
 }
 
 /* ============ タイマー ============ */

@@ -483,10 +483,34 @@ function writeData(raw, senderWc) {
 // 意図を正本に適用して保存する。書き手はここだけ。
 // 未知の意図は保存を通さない(黙って素通りさせると、届いていないのにレンダラは
 // 適用されたつもりで先へ進み、次の起動で消えている)。
+// 削除の取り消し用の控え(id → deletionUndo)。削除を適用する直前の正本から作り、
+// 書き込めたら持つ。レンダラは取り消しを「この削除を取り消す」(task/undelete)として
+// 送るだけでよく、削除の応答を待たずに送れる。main は意図を受け取った順に適用する
+// ので取り消しは必ず削除のあとに当たり、応答前にレンダラが閉じても失われない。
+const deletions = new Map();
+
 function commit(action, senderWc) {
+  if (action && action.type === 'task/undelete') {
+    const u = deletions.get(action.id);
+    // 削除が通っていない(失敗した、取り消し済み)なら戻すものは無い。何も書かない。
+    if (!u) return null;
+    const preserved = writeData(applyAction(store, {
+      type: 'task/restore',
+      task: u.task,
+      index: u.index,
+      // 削除のあと取り消すまでに届いた記録の位置は、レンダラが添えてくる。
+      patches: u.patches.concat(Array.isArray(action.patches) ? action.patches : []),
+      select: u.selected && !u.task.completed
+    }), senderWc);
+    deletions.delete(action.id);
+    return preserved;
+  }
+  const undo = action && action.type === 'task/delete' ? deletionUndo(store, action.id) : null;
   const next = applyAction(store, action);
   if (!next) throw new Error('未知の操作です: ' + String((action && action.type) || action));
-  return writeData(next, senderWc);
+  const preserved = writeData(next, senderWc);
+  if (undo) deletions.set(action.id, undo);
+  return preserved;
 }
 
 // 応答には必ず正本を添える。成功なら適用結果、失敗なら適用前の内容が入るので、
@@ -494,14 +518,9 @@ function commit(action, senderWc) {
 ipcMain.handle('data:mutate', (e, action) => {
   if (!isTrusted(e)) return { ok: false, error: 'untrusted sender' };
   try {
-    // 削除なら、適用する直前の正本から取り消し用の控えを作って添える。
-    const undo = action && action.type === 'task/delete' ? deletionUndo(store, action.id) : null;
     const preserved = commit(action, e.sender);
-    const res = { ok: true, snapshot: store };
-    if (undo) res.undo = undo;
     // 原本を退避したことは黙らせない(レンダラがトーストで知らせる)。
-    if (preserved) res.preserved = preserved;
-    return res;
+    return preserved ? { ok: true, snapshot: store, preserved } : { ok: true, snapshot: store };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err), snapshot: store };
   }

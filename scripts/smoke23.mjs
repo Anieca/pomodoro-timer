@@ -36,6 +36,7 @@ import * as os from 'node:os';
 //  AQ) 設定を閉じてすぐ開始しても、変えた長さで始まる
 //  AR) 書けていない記録が削除のあとに書かれても、取り消しでそのタスクに戻る
 //  AS) クイック追加で応答前に二度確定しても、タスクは一つだけ作られる
+//  AT) 削除の応答前に取り消してすぐ終了しても、取り消しは効く
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -913,6 +914,28 @@ for (const fail of [false, true]) {
   assert(errors.length === 0, 'AS: コンソール/ページエラーが出ない');
   assert(made.length === 1, 'AS: タスクは一つだけ作られる');
   assert(made[0] && saved.selectedTaskId === made[0].id, 'AS: 作ったタスクがセットされる');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AT: 削除の応答前に取り消してすぐ終了しても取り消しは効く ===== */
+{
+  const ud = mkdir();
+  const { app, page } = await launch(ud);
+  await page.evaluate(t => mutate({ type: 'task/add', task: t }), task('at1', '取り消すタスク'));
+  await page.waitForTimeout(200);
+  await slowWrites(app, 800);
+  // 取り消しを押した直後にレンダラを止める(閉じたのと同じく、以降の応答は処理されない)。
+  const busy = page.evaluate(() => {
+    deleteTask('at1');
+    document.querySelector('#toast .toast-action').click();
+    const end = Date.now() + 3500; while (Date.now() < end);
+  });
+  await new Promise(r => setTimeout(r, 2500));
+  const kept = readData(ud).tasks.some(t => t.id === 'at1');
+  await busy;
+  console.log('AT: task kept while renderer is stalled=', kept);
+  assert(kept, 'AT: 応答を待たずに送った取り消しで、タスクは戻っている');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

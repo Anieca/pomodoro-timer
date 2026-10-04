@@ -11,6 +11,9 @@ import * as os from 'node:os';
 //  R) レンダラは受け取ったスナップショットをそのまま表示する(自分では正規化しない)
 //  S) 応答待ちの間に入った編集が消えない(丸ごと置換をやめた理由そのもの)
 //  T) 未知の意図は保存を通さない
+//  U) 応答前に完了を二度切り替えても、最後の操作どおりに保存される
+//  V) 選択を続けて変えたとき、先の応答で後の選択の保留を消さない
+//  W) 完了の保存に失敗したら、区切った実働の付け先を元に戻す
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -192,6 +195,95 @@ async function launch(userData) {
   assert(fs.readFileSync(dataFile(ud), 'utf8') === before, 'T: ディスクは触らない');
   assert(res.snapshot && res.snapshot.tasks.length === 1, 'T: 失敗時も正本を添えて返す');
 
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+// main の書き込みを遅らせる/失敗させる。main は同期で書くので、ここで止めている間に
+// レンダラは次の操作ができる(応答待ちの競合を決定的に再現できる)。
+const slowWrites = (app, ms) => app.evaluate((_, ms) => {
+  const fs = process.mainModule.require('fs');
+  const orig = fs.writeFileSync;
+  fs.writeFileSync = (...a) => { const end = Date.now() + ms; while (Date.now() < end); return orig(...a); };
+}, ms);
+const failNextWrite = app => app.evaluate(() => {
+  const fs = process.mainModule.require('fs');
+  const orig = fs.writeFileSync;
+  fs.writeFileSync = () => { fs.writeFileSync = orig; throw new Error('ENOSPC: テスト用の書き込み失敗'); };
+});
+
+/* ===== U: 応答前に二度切り替えた完了は最後の操作どおり ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(t => mutate({ type: 'task/add', task: t }), task('u1', '切り替えるタスク'));
+  await page.waitForTimeout(200);
+  await slowWrites(app, 400);
+  // 正本を反転して送ると、二度とも同じ(未完了の)正本を見て「完了」を二回送ってしまう。
+  await page.evaluate(() => {
+    const check = document.querySelector('#taskList .task-check');
+    check.click();
+    check.click();
+  });
+  await page.waitForTimeout(1500);
+  const saved = readData(ud).tasks.find(t => t.id === 'u1');
+  const onScreen = await page.evaluate(() => data.tasks.find(t => t.id === 'u1').completed);
+  console.log('U: saved.completed=', saved.completed, 'onScreen=', onScreen, 'errors=', errors);
+  assert(errors.length === 0, 'U: コンソール/ページエラーが出ない');
+  assert(saved.completed === false, 'U: 二度切り替えたら未完了で保存される');
+  assert(onScreen === false, 'U: 画面も未完了');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== V: 先に返った選択の応答で後の選択の保留を消さない ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(async ts => {
+    for (const t of ts) await mutate({ type: 'task/add', task: t });
+  }, [task('va', 'A'), task('vb', 'B')]);
+  await slowWrites(app, 400);
+  // A の応答だけが届いた間(正本は A、B はまだ保存中)のフォーカス対象を見る。
+  // ここで開始されたセッションの付け先になる値。main が書き込みで止まっている間は
+  // 外からの問い合わせも滞るので、ページ内で見張る。
+  const between = await page.evaluate(() => new Promise((resolve, reject) => {
+    const seen = new Set();
+    const iv = setInterval(() => {
+      if (data.selectedTaskId === 'va') seen.add(focusTaskId());
+      if (data.selectedTaskId === 'vb') { clearInterval(iv); resolve([...seen]); }
+    }, 10);
+    setTimeout(() => { clearInterval(iv); reject(new Error('B の応答が届かない')); }, 5000);
+    selectTask('va');
+    selectTask('vb');
+  }));
+  console.log('V: focus between responses=', JSON.stringify(between), 'errors=', errors);
+  assert(errors.length === 0, 'V: コンソール/ページエラーが出ない');
+  assert(between.length > 0 && between.every(id => id === 'vb'), 'V: A の応答が先に届いても、フォーカス対象は後に選んだ B のまま');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== W: 完了の保存に失敗したら実働の付け先を戻す ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(async t => {
+    await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: t.id });
+    startPauseResume();
+  }, task('w1', '作業中のタスク'));
+  await failNextWrite(app);
+  const after = await page.evaluate(async () => {
+    toggleTaskDone('w1', true);
+    await new Promise(r => setTimeout(r, 500));
+    return { seg: timer.current && timer.current.segTaskId, selected: data.selectedTaskId,
+             completed: data.tasks.find(t => t.id === 'w1').completed };
+  });
+  console.log('W: after failed completion=', JSON.stringify(after), 'errors=', errors);
+  assert(after.selected === 'w1' && after.completed === false, 'W: 正本では選択中・未完了のまま');
+  assert(after.seg === 'w1', 'W: 実働の付け先も元のタスクに戻る');
+  await page.evaluate(() => clearInterval(timer.intervalId));
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

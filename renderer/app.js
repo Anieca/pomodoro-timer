@@ -190,7 +190,7 @@ function taskItem(t) {
   check.className = 'task-check';
   check.checked = t.completed;
   check.title = t.completed ? '未完了に戻す' : '完了にする';
-  check.addEventListener('change', () => toggleTaskDone(t.id));
+  check.addEventListener('change', () => toggleTaskDone(t.id, check.checked));
 
   const title = document.createElement('span');
   title.className = 'task-title';
@@ -383,22 +383,39 @@ function switchSegment(taskId) {
 }
 
 // フォーカス対象タスクの選択(アイドル中=次のポモドーロ用、実行中=即時切り替え)
+// 選択の要求ごとの番号。A を選んで応答を待つ間に B を選んだとき、先に返った A の
+// 応答で B の保留を消すと、その隙に始めたセッションが A に付いてしまう。
+let selectSeq = 0;
 function selectTask(taskId) {
+  const seq = ++selectSeq;
   pendingTaskId = taskId || null;
   switchSegment(taskId);            // 実行中セッションの内訳はレンダラ側の状態
-  mutate({ type: 'task/select', id: taskId }).then(() => { pendingTaskId = undefined; });
+  mutate({ type: 'task/select', id: taskId }).then(() => {
+    if (seq === selectSeq) pendingTaskId = undefined;   // 最後の要求が決着したときだけ外す
+  });
 }
 
-function toggleTaskDone(id) {
+// completed は操作した部品の状態から受け取る。最後に確定した正本を反転すると、
+// 応答が届く前に二度切り替えたとき両方が「完了」を送り、画面と保存がずれる。
+function toggleTaskDone(id, completed) {
   const t = data.tasks.find(t => t.id === id);
   if (!t) return;
-  const completed = !t.completed;
+  if (completed === undefined) completed = !t.completed;
   // 完了したら選択解除(完了までの時間はセグメントとして記録済み)
-  if (completed && focusTaskId() === id) {
+  const session = timer.current;
+  const prevSeg = session ? session.segTaskId : null;
+  const unfocus = completed && focusTaskId() === id;
+  if (unfocus) {
     switchSegment(null);
     toast(`「${t.title}」を完了しました 🎉`);
   }
-  mutate({ type: 'task/setDone', id, completed, at: completed ? new Date().toISOString() : null });
+  mutate({ type: 'task/setDone', id, completed, at: completed ? new Date().toISOString() : null }).then(res => {
+    // 保存できなければ正本ではまだ選択中で未完了のまま。区切ったセグメントを戻さないと、
+    // 以降の実働が「タスクなし」に付き、次の保存でその帰属が確定してしまう。
+    // 別のタスクへ移ったあとや次のセッションには手を出さない。
+    const failed = !res || res.ok === false;
+    if (unfocus && failed && timer.current === session && session && session.segTaskId === null) switchSegment(prevSeg);
+  });
 }
 
 function deleteTask(id) {
@@ -721,7 +738,7 @@ function renderFocusTask() {
     const check = document.createElement('button');
     check.className = 'focus-check';
     check.title = 'タスクを完了にする';
-    check.addEventListener('click', () => toggleTaskDone(t.id));
+    check.addEventListener('click', () => toggleTaskDone(t.id, true));
 
     const title = document.createElement('span');
     title.className = 'focus-title';

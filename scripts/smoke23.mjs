@@ -37,6 +37,7 @@ import * as os from 'node:os';
 //  AR) 書けていない記録が削除のあとに書かれても、取り消しでそのタスクに戻る
 //  AS) クイック追加で応答前に二度確定しても、タスクは一つだけ作られる
 //  AT) 削除の応答前に取り消してすぐ終了しても、取り消しは効く
+//  AU) 取り消しの保存に失敗しても、取り消しをもう一度出して戻せる(その間の記録も)
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -936,6 +937,40 @@ for (const fail of [false, true]) {
   await busy;
   console.log('AT: task kept while renderer is stalled=', kept);
   assert(kept, 'AT: 応答を待たずに送った取り消しで、タスクは戻っている');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AU: 取り消しの保存に失敗しても、もう一度取り消せる ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(async t => {
+    await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: t.id });
+    startPauseResume();
+  }, task('au1', '戻し直すタスク'));
+  await page.waitForTimeout(1200);
+  await page.evaluate(() => deleteTask('au1'));
+  await page.waitForTimeout(300);
+  await page.evaluate(() => finishSession(true));   // 削除から取り消しまでの記録
+  await page.waitForTimeout(300);
+  await setWritesFailing(app, true);
+  await page.evaluate(() => document.querySelector('#toast .toast-action').click());
+  await page.waitForTimeout(500);
+  const offered = await page.evaluate(() => {
+    const el = document.querySelector('#toast');
+    return !el.hidden && !!el.querySelector('.toast-action') && /元に戻せませんでした/.test(el.textContent);
+  });
+  await setWritesFailing(app, false);
+  await page.evaluate(() => document.querySelector('#toast .toast-action').click());
+  await page.waitForTimeout(500);
+  const saved = readData(ud);
+  const rec = saved.sessions.at(-1);
+  console.log('AU: re-offered=', offered, 'tasks=', JSON.stringify(saved.tasks.map(t => t.id)), 'record=', JSON.stringify(rec && rec.taskTimes));
+  assert(offered, 'AU: 失敗したら取り消しをもう一度出す');
+  assert(saved.tasks.some(t => t.id === 'au1'), 'AU: もう一度押せばタスクが戻る');
+  assert(rec && rec.taskIds.includes('au1'), 'AU: 削除から取り消しまでの記録も戻る');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

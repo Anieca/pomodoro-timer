@@ -545,14 +545,20 @@ function deleteTask(id) {
   // 作って持っており、main は受け取った順に適用するので必ず削除のあとに当たる
   // (削除が失敗していれば何もしない)。待つと、その間にレンダラが閉じたとき
   // 取り消しが失われ、受け付けたはずの取り消しが効かない。
-  let undone = false;
-  toast(`「${t.title}」を削除しました`, { label: '元に戻す', fn: () => {
-    if (undone) return;
-    undone = true;
-    const extra = undoablePatches.get(id) || [];
-    undoablePatches.delete(id);
-    restoreTask(id, extra, wasSelected && !isDone(t));
-  } });
+  // 取り消しの状態(控えに足す位置)は、戻せたと分かるまで手放さない。保存に失敗
+  // したら(main も控えを持ったまま)、取り消しをもう一度出す。
+  let undoing = false;
+  const offer = msg => toast(msg, { label: '元に戻す', fn: undo });
+  const undo = () => {
+    if (undoing) return;
+    undoing = true;
+    restoreTask(id, undoablePatches.get(id) || [], wasSelected && !isDone(t)).then(res => {
+      undoing = false;
+      if (!failed(res)) { undoablePatches.delete(id); return; }
+      offer(`「${t.title}」を元に戻せませんでした`);
+    });
+  };
+  offer(`「${t.title}」を削除しました`);
 }
 
 // 選択も戻るかは main が控え(削除直前の正本)で決める。応答までの間は、削除した

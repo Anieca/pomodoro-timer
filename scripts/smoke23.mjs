@@ -33,6 +33,7 @@ import * as os from 'node:os';
 //  AN) 削除の応答待ちの行は隠れて操作を受けず、削除が失敗したら戻る
 //  AO) 書けなかったタイマーの進行状態は、書けるようになったら送り直す
 //  AP) 記録の失敗の応答を待つ間に終了しても、記録は終了時に書かれる
+//  AQ) 設定を閉じてすぐ開始しても、変えた長さで始まる
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -834,6 +835,29 @@ for (const fail of [false, true]) {
   await busy;
   console.log('AP: sessions=', JSON.stringify(saved.map(x => x.taskIds)));
   assert(saved.length === 1 && saved[0].taskIds.includes('ap1'), 'AP: 終了時の同期送信で記録が書かれる(二重にならない)');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AQ: 設定を閉じてすぐ開始しても変えた長さで始まる ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(() => openSettings());
+  await page.waitForTimeout(300);
+  await slowWrites(app, 800);
+  const totalMin = await page.evaluate(() => {
+    document.querySelector('#setWork').value = '50';
+    saveSettings();                         // 応答を待たずに
+    startPauseResume();
+    return timer.totalMs / 60000;
+  });
+  await page.waitForTimeout(1500);
+  const saved = readData(ud).settings.workMin;
+  console.log('AQ: started with', totalMin, 'min, saved workMin=', saved, 'errors=', errors);
+  assert(errors.length === 0, 'AQ: コンソール/ページエラーが出ない');
+  assert(totalMin === 50 && saved === 50, 'AQ: 応答前に開始しても新しい作業時間(50分)で始まる');
+  await page.evaluate(() => clearInterval(timer.intervalId));
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

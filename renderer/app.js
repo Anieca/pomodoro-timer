@@ -107,8 +107,28 @@ const sessionIntervals = s => (Array.isArray(s.intervals) ? s.intervals : [{ sta
 // Date → "HH:MM"
 const fmtClock = d => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
+// 応答待ちの設定の差分(送った順)。設定を閉じてすぐ開始されたとき、正本はまだ
+// 古い値なので、それで長さを決めると変えたはずの設定が効かない(応答のあとでは
+// 実行中のタイマーは直せない)。読むときは正本に要求中の差分を重ねた値を使う。
+const pendingSettings = [];
+function settings() {
+  let cur = data.settings;
+  for (const { patch } of pendingSettings) {
+    cur = { ...cur, ...patch, whiteNoise: { ...cur.whiteNoise, ...(patch.whiteNoise || {}) } };
+  }
+  return cur;
+}
+function mutateSettings(patch) {
+  const entry = { patch };
+  pendingSettings.push(entry);
+  return mutate({ type: 'settings/update', patch }).then(res => {
+    pendingSettings.splice(pendingSettings.indexOf(entry), 1);
+    return res;
+  });
+}
+
 function modeDurationMs(mode) {
-  const s = data.settings;
+  const s = settings();
   const min = mode === 'work' ? s.workMin : mode === 'short' ? s.shortMin : s.longMin;
   return min * 60 * 1000;
 }
@@ -589,7 +609,7 @@ function renderTimer() {
 function renderCycleDots() {
   const wrap = $('#cycleDots');
   wrap.textContent = '';
-  const every = data.settings.longEvery;
+  const every = settings().longEvery;
   // 長休憩の「間」だけ全点灯にする。長休憩が終わって次のフォーカスへ戻ると
   // cycle は every の倍数のままなので、mode を条件に含めないと次サイクル開始時も
   // 4/4 のまま表示されてしまう(長休憩後は 0/4 が自然)。
@@ -742,7 +762,7 @@ function finishSession(completed) {
     notify(wasWork ? 'フォーカス完了!' : '休憩終了!',
            wasWork ? 'おつかれさまです。休憩しましょう。' : '次のフォーカスを始めましょう。');
     timer.mode = wasWork
-      ? (timer.cycle % data.settings.longEvery === 0 ? 'long' : 'short')
+      ? (timer.cycle % settings().longEvery === 0 ? 'long' : 'short')
       : 'work';
   }
 
@@ -754,7 +774,7 @@ function finishSession(completed) {
 
   // 自動開始(設定で有効な場合)
   if (completed) {
-    const s = data.settings;
+    const s = settings();
     if ((timer.mode !== 'work' && s.autoStartBreak) || (timer.mode === 'work' && s.autoStartWork)) {
       setTimeout(() => { if (timer.status === 'idle') startPauseResume(); }, 800);
     }
@@ -999,12 +1019,12 @@ async function startNoise(name, volume) {
 
 // 現在のモードで鳴らす音源ファイル名(work=フォーカス音源, 休憩=休憩音源)
 function noiseFileFor(mode) {
-  const wn = data.settings.whiteNoise;
+  const wn = settings().whiteNoise;
   return mode === 'work' ? wn.file : wn.breakFile;
 }
 
 function updateNoise() {
-  const wn = data.settings.whiteNoise;
+  const wn = settings().whiteNoise;
   const sound = soundsCache.find(s => s.name === noiseFileFor(timer.mode));
   const active = timer.status === 'running' && sound;
   const shouldPlay = active && wn.enabled;
@@ -1027,7 +1047,7 @@ function updateNoise() {
 
 /* ============ 設定 ============ */
 async function openSettings() {
-  const s = data.settings;
+  const s = settings();
   $('#setWork').value = s.workMin;
   $('#setShort').value = s.shortMin;
   $('#setLong').value = s.longMin;
@@ -1081,7 +1101,7 @@ async function saveSettings() {
     const v = parseInt($(sel).value, 10);
     return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
   };
-  const s = data.settings;
+  const s = settings();
   const patch = {
     workMin: num('#setWork', 1, 120, s.workMin),
     shortMin: num('#setShort', 1, 60, s.shortMin),
@@ -1097,14 +1117,20 @@ async function saveSettings() {
     }
   };
   $('#settingsModal').hidden = true;
-  await mutate({ type: 'settings/update', patch });
-  // 反映後の正本から引き直す。main が丸めた値(範囲外の入力など)がそのまま効く。
-  if (timer.status === 'idle') {
-    timer.remainMs = modeDurationMs(timer.mode);
-    timer.totalMs = timer.remainMs;
-  }
-  renderAll();
-  updateNoise();
+  const sent = mutateSettings(patch);
+  // 待機中の表示とノイズは要求中の値ですぐ合わせる(閉じてすぐ開始しても新しい長さで始まる)。
+  const resync = () => {
+    if (timer.status === 'idle') {
+      timer.remainMs = modeDurationMs(timer.mode);
+      timer.totalMs = timer.remainMs;
+    }
+    renderAll();
+    updateNoise();
+  };
+  resync();
+  await sent;
+  // 反映後の正本から引き直す。main が丸めた値(範囲外の入力など)や、失敗して戻った値が効く。
+  resync();
 }
 
 /* ============ 履歴 ============ */
@@ -1373,15 +1399,9 @@ $('#previewBtn').addEventListener('click', () => previewSound('#setNoiseFile'));
 $('#previewBreakBtn').addEventListener('click', () => previewSound('#setNoiseBreakFile'));
 // 応答待ちの間の切り替えは、最後に確定した正本ではなく要求中の値から反転する
 // (正本を反転すると、応答前の二度押しが同じ値を二回送って一回分に潰れる)。
-let pendingNoise, noiseSeq = 0;
 $('#noiseIndicator').addEventListener('click', () => {
-  const seq = ++noiseSeq;
-  const enabled = !(pendingNoise !== undefined ? pendingNoise : data.settings.whiteNoise.enabled);
-  pendingNoise = enabled;
-  mutate({ type: 'settings/update', patch: { whiteNoise: { enabled } } }).then(() => {
-    if (seq === noiseSeq) pendingNoise = undefined;
-    updateNoise();
-  });
+  const enabled = !settings().whiteNoise.enabled;
+  mutateSettings({ whiteNoise: { enabled } }).then(() => updateNoise());
 });
 
 // Space: 開始/一時停止、Esc: モーダル・メニューを閉じる

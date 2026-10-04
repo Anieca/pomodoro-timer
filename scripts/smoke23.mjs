@@ -27,6 +27,8 @@ import * as os from 'node:os';
 //  AH) 保存できなかった記録は捨てず、書けるようになったら送り直す
 //  AI) 削除の応答待ちにセッションが終わり、その削除が失敗しても帰属は残る
 //  AJ) 応答待ちの編集のあとに削除しても、取り消しはその編集を巻き戻さない
+//  AK) 応答前に削除を二度押しても、取り消しが効く
+//  AL) 削除してから取り消すまでに終わった記録も、取り消しでそのタスクに戻る
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 // 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
 const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
@@ -677,6 +679,55 @@ for (const fail of [false, true]) {
   assert(errors.length === 0, 'AJ: コンソール/ページエラーが出ない');
   assert(saved && saved.completed === true, 'AJ: 取り消しで完了が巻き戻らない');
   assert(saved && saved.title === '変えた名前', 'AJ: 取り消しで名前の変更が巻き戻らない');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AK: 応答前に削除を二度押しても取り消しが効く ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(t => mutate({ type: 'task/add', task: t }), task('ak1', '二度消すタスク'));
+  await page.waitForTimeout(200);
+  await slowWrites(app, 400);
+  await page.evaluate(() => {
+    deleteTask('ak1');
+    deleteTask('ak1');
+    document.querySelector('#toast .toast-action').click();
+  });
+  await page.waitForTimeout(2500);
+  const saved = readData(ud);
+  console.log('AK: tasks=', JSON.stringify(saved.tasks.map(t => t.id)), 'errors=', errors);
+  assert(errors.length === 0, 'AK: コンソール/ページエラーが出ない');
+  assert(saved.tasks.filter(t => t.id === 'ak1').length === 1, 'AK: 取り消しでタスクが戻る');
+  await app.close();
+  fs.rmSync(ud, { recursive: true, force: true });
+}
+
+/* ===== AL: 削除から取り消しまでに終わった記録も戻る ===== */
+{
+  const ud = mkdir();
+  const { app, page, errors } = await launch(ud);
+  await page.evaluate(async t => {
+    await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: t.id });
+    startPauseResume();
+  }, task('al1', '消してから戻すタスク'));
+  await page.waitForTimeout(1200);
+  await page.evaluate(() => deleteTask('al1'));
+  await page.waitForTimeout(300);           // 削除は通っている
+  await page.evaluate(() => finishSession(true));
+  await page.waitForTimeout(300);
+  const stripped = readData(ud).sessions.at(-1);
+  await page.evaluate(() => document.querySelector('#toast .toast-action').click());
+  await page.waitForTimeout(500);
+  const saved = readData(ud);
+  const rec = saved.sessions.at(-1);
+  console.log('AL: stripped=', JSON.stringify(stripped.taskTimes), 'restored=', JSON.stringify(rec.taskTimes), 'errors=', errors);
+  assert(errors.length === 0, 'AL: コンソール/ページエラーが出ない');
+  assert(!stripped.taskIds.includes('al1'), 'AL: 削除中に届いた記録は削除済みのタスクを指さない');
+  assert(saved.tasks.some(t => t.id === 'al1'), 'AL: 取り消しでタスクが戻る');
+  assert(rec.taskIds.includes('al1') && rec.taskTimes.some(tt => tt.taskId === 'al1'), 'AL: その間の記録もそのタスクに戻る');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

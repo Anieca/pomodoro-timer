@@ -134,7 +134,7 @@ const base = () => ({
   } });
   const s3 = gone.sessions[1];
   eq(s3.taskIds, ['t1'], 'session/add: 正本に無いタスクを taskIds から外す');
-  eq(s3.taskTimes, [{ taskId: 't1', durationSec: 300 }, { taskId: null, durationSec: 600 }], 'session/add: 外した内訳は「タスクなし」に合算する');
+  eq(s3.taskTimes, [{ taskId: 't1', durationSec: 300 }, { taskId: null, durationSec: 200 }, { taskId: null, durationSec: 400 }], 'session/add: 外した内訳はその位置のまま「タスクなし」にする(取り消しで位置から戻せる)');
   const known = { id: 's4', mode: 'work', taskIds: ['t1'], taskTimes: [{ taskId: 't1', durationSec: 60 }] };
   assert(applyAction(base(), { type: 'session/add', session: known }).sessions[1] === known, 'session/add: 参照が全部正本にあれば手を加えない');
   const again = applyAction(base(), { type: 'session/add', session: { id: 's1', mode: 'work' } });

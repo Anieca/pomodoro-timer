@@ -458,9 +458,20 @@ function toggleTaskDone(id, completed) {
   mutateFocus(null, action).then(settled);
 }
 
+// 応答待ちの削除(id)。行は応答まで残って見えるので、二度押すと二回送られ、
+// 取り消しの控えが付くのは一回目の応答だけになる(後から出たトーストの取り消しが効かない)。
+const pendingDeletes = new Set();
+// 取り消せる削除(id → 控えに足す内訳の位置)。削除のあと取り消すまでに終わった
+// 記録は、送った時点で削除済みのタスクを指す内訳が session/add で外れる。控えは
+// 削除の時点で作ったのでそれを知らない。記録を組むときに位置を足しておき、
+// 取り消しで一緒に付け直す。
+const undoablePatches = new Map();
+
 function deleteTask(id) {
   const t = data.tasks.find(t => t.id === id);
-  if (!t) return;
+  if (!t || pendingDeletes.has(id)) return;
+  pendingDeletes.add(id);
+  undoablePatches.set(id, []);
   const wasSelected = focusTaskId() === id;
   // 実行中セッションの内訳はここでは匿名化しない。応答前に匿名化すると、その間に
   // セッションが終わったとき、記録は匿名のまま送られ(タスク別に合算済みなので
@@ -475,8 +486,18 @@ function deleteTask(id) {
   // 応答済みならその場で送る。後回しにすると、直後に送られる記録などより後ろに
   // 並び、main での適用順が入れ替わる。
   let settled = null;
-  const undoWith = res => { if (!failed(res) && res.undo) restoreTask({ ...res.undo, wasSelected }); };
-  const sent = (wasSelected ? mutateFocus(null, action) : mutate(action)).then(res => { settled = { res }; return res; });
+  const undoWith = res => {
+    if (failed(res) || !res.undo) return;
+    const extra = undoablePatches.get(id) || [];
+    undoablePatches.delete(id);
+    restoreTask({ ...res.undo, patches: res.undo.patches.concat(extra), wasSelected });
+  };
+  const sent = (wasSelected ? mutateFocus(null, action) : mutate(action)).then(res => {
+    settled = { res };
+    pendingDeletes.delete(id);
+    if (failed(res)) undoablePatches.delete(id);   // 削除されていなければ取り消すものも無い
+    return res;
+  });
   toast(`「${t.title}」を削除しました`, { label: '元に戻す', fn: () => {
     if (settled) undoWith(settled.res); else sent.then(undoWith);
   } });
@@ -655,6 +676,11 @@ function recordSession(completed, sync) {
     for (const s of c.segments) byTask.set(s.taskId, (byTask.get(s.taskId) || 0) + s.durationSec);
     taskTimes = [...byTask.entries()].map(([taskId, durationSec]) => ({ taskId, durationSec }));
     taskIds = taskTimes.filter(tt => tt.taskId).map(tt => tt.taskId);
+    // 取り消せる削除のタスクを指す内訳は、main で外れても取り消しで戻せるよう位置を控える。
+    taskTimes.forEach((tt, i) => {
+      const extra = tt.taskId && undoablePatches.get(tt.taskId);
+      if (extra) extra.push({ sessionId: c.id, indexes: [i] });
+    });
   }
   const action = {
     type: 'session/add',

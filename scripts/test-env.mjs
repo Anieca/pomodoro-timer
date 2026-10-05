@@ -16,3 +16,9 @@ const isExternalFontFailure = m => {
 
 // テストが失敗として数えるべきコンソールエラーか
 export const isAppError = m => m.type() === 'error' && !isExternalFontFailure(m);
+
+// レンダラの初期化(保存データの読み込みと初回描画)が済むまで待つ。
+// 関数が定義されたかどうかで待つと、スクリプトの評価直後(非同期の読み込みより前)に
+// 通ってしまい、読み込み完了とレースする。
+export const waitForApp = (page, timeout = 15000) =>
+  page.waitForSelector('html[data-ready="true"]', { state: 'attached', timeout });

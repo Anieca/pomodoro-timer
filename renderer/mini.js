@@ -1,6 +1,5 @@
 const $ = sel => document.querySelector(sel);
 const RING_LEN = 2 * Math.PI * 42;
-const MODE_LABEL = { work: 'フォーカス', short: '小休憩', long: '長休憩' };
 
 function render(s) {
   $('#time').textContent = `${s.mm}:${s.ss}`;

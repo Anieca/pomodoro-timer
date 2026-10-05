@@ -18,6 +18,15 @@ const DEFAULT_SETTINGS = {
 };
 
 const MODES = ['work', 'short', 'long'];
+const MODE_LABEL = { work: 'フォーカス', short: '小休憩', long: '長休憩' };
+
+// 数値設定の許容範囲(分・回)。正規化と設定画面の入力欄の両方がこれを使う。
+const SETTING_LIMITS = {
+  workMin: [1, 120],
+  shortMin: [1, 60],
+  longMin: [1, 90],
+  longEvery: [1, 12]
+};
 
 // id を失った記録を捨てずに復旧するための採番。レンダラ側の uid() とは
 // 目的が違う(あちらは新規作成、こちらは破損データの修復)。
@@ -45,13 +54,12 @@ function clampSettings(s) {
   const d = DEFAULT_SETTINGS;
   const src = s && typeof s === 'object' ? s : {};
   const wn = src.whiteNoise && typeof src.whiteNoise === 'object' ? src.whiteNoise : {};
+  const limited = {};
+  for (const [key, [min, max]] of Object.entries(SETTING_LIMITS)) limited[key] = clampInt(src[key], min, max, d[key]);
   return {
     ...d,
     ...src,
-    workMin: clampInt(src.workMin, 1, 120, d.workMin),
-    shortMin: clampInt(src.shortMin, 1, 60, d.shortMin),
-    longMin: clampInt(src.longMin, 1, 90, d.longMin),
-    longEvery: clampInt(src.longEvery, 1, 12, d.longEvery),
+    ...limited,
     autoStartBreak: !!src.autoStartBreak,
     autoStartWork: !!src.autoStartWork,
     whiteNoise: {
@@ -176,6 +184,9 @@ function normalizeData(raw) {
 // レンダラ(<script>)では関数がそのまま global に出る。
 if (typeof module !== 'undefined') module.exports = {
   DEFAULT_SETTINGS,
+  SETTING_LIMITS,
+  MODES,
+  MODE_LABEL,
   normalizeData,
   normalizeSession,
   clampSettings,

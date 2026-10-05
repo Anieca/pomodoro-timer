@@ -54,10 +54,19 @@ npm start
 ## プロジェクト構成
 
 ```
-main.js            メインプロセス（ウィンドウ生成・IPC・データ保存・エクスポート）
+main.js            メインプロセスの入口
+main/              メインプロセスの各機能
+  windows.js         メイン / ミニウィンドウの生成と IPC 発信元の検証
+  tray.js            Tray・Dock・ミニへのタイマー状態の反映
+  store.js           保存データの正本と永続化（アトミック書き込み・破損退避）
+  ipc.js             レンダラーとの IPC の受け口（preload.js と一対一）
+  export.js          JSON / CSV 書き出し
+  sounds.js          音源の一覧・読み込み
+  power.js           システムスリープの検知
+  paths.js           保存データ・音源・アイコンの場所
 preload.js         レンダラーへの API 公開（contextBridge）
-shared/            main とテストで共有する純粋モジュール（schema.js / actions.js）
-renderer/          UI（index.html / styles.css / app.js）
+shared/            main とレンダラーで共有する純粋モジュール（schema.js / actions.js）
+renderer/          UI（index.html / styles.css / app.js、ミニタイマーは mini.html / mini.js）
 assets/sounds/     ノイズ音源
 scripts/           音源生成・スモークテスト用スクリプト
 ```

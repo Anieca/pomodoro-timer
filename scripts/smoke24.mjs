@@ -1,5 +1,5 @@
 import { _electron as electron } from 'playwright-core';
-import { ELECTRON, isAppError } from './test-env.mjs';
+import { ELECTRON, isAppError, waitForApp } from './test-env.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -37,7 +37,7 @@ const errors = [];
 page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
 page.on('pageerror', e => errors.push(String(e)));
 await page.waitForSelector('#startBtn', { timeout: 15000 });
-await page.waitForFunction(() => typeof applySleep === 'function', { timeout: 15000 });
+await waitForApp(page);
 
 const H3 = 3 * 60 * 60 * 1000;
 const MIN = 60 * 1000;

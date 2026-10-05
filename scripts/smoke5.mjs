@@ -3,7 +3,7 @@ import { ELECTRON } from './test-env.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-const APP_DIR = '/Users/ishiirub/Projects/pomodoro-timer';
+const APP_DIR = path.resolve(import.meta.dirname, '..');
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
 const app = await electron.launch({
   executablePath: ELECTRON,

@@ -19,7 +19,9 @@ async function reseed(edit) {
   const d = JSON.parse(fs.readFileSync(dataFile(userData), 'utf8'));
   edit(d);
   fs.writeFileSync(dataFile(userData), JSON.stringify(d, null, 2));
-  await page.evaluate(() => location.reload());
+  // page.reload() は新しい文書の読み込みまで待つ。evaluate で location.reload() すると
+  // 古い文書の data-ready に waitForApp が先に一致し、読み直し前の画面を撮りうる。
+  await page.reload();
   await waitForApp(page);
 }
 

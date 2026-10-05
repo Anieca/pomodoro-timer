@@ -7,8 +7,12 @@ on:
 
 jobs:
   test:
-    # スモークテストは macOS 版 Electron のバイナリパスを前提にしているため macOS で実行する。
-    runs-on: macos-latest
+    # 配布対象の macOS に加え、Linux でも通ることを確かめる(Electron のパスは OS ごとに解決する)。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,7 +27,8 @@ jobs:
           node --check renderer/app.js
           node --check renderer/mini.js
       - name: Smoke tests
-        run: npm test
+        # Linux はディスプレイが無いので仮想ディスプレイ上で起動する
+        run: ${{ runner.os == 'Linux' && 'xvfb-run -a npm test' || 'npm test' }}
 
   pack:
     # electron-builder の配布パッケージングが通るかを確認する(更新時の回帰検知)。

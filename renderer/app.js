@@ -1523,6 +1523,36 @@ async function doExport(format) {
   else if (res.error) toast(`エクスポートに失敗しました: ${res.error}`);
 }
 
+/* ============ インポート ============ */
+// 今のデータを JSON の内容で置き換える。ファイルの選択から置き換えまでは main が行う。
+// タイマーの実行中は受け付けない。実行中のセッションは置き換え前のタスクを指して
+// いて、進行(モード・長休憩までの数)もインポートした内容と食い違うため。
+async function doImport() {
+  if (timer.status !== 'idle') {
+    toast('タイマーを止めてからインポートしてください');
+    return;
+  }
+  const res = await window.api.importData();
+  if (!res || res.canceled) return;
+  if (res.snapshot) committed = res.snapshot;
+  project();
+  if (res.ok) {
+    // 進行状態は起動時と同じく正本から取り直す(タイマーは止まっている)。
+    // 長さは取り込んだ設定で決まるので、project() で data を差し替えてから求める。
+    timer.mode = data.timer.mode;
+    timer.cycle = data.timer.cycle;
+    timer.remainMs = timer.totalMs = modeDurationMs(timer.mode);
+    renderAll();
+  }
+  if (!$('#historyModal').hidden) renderHistory();
+  if (!res.ok) toast(`インポートに失敗しました: ${res.error || '不明なエラー'}`);
+  else {
+    const { tasks, sessions } = res.counts;
+    toast(`インポートしました(タスク ${tasks} 件・記録 ${sessions} 件)` +
+      (res.backup ? `。元のデータは ${res.backup} に控えました` : ''));
+  }
+}
+
 /* ============ イベント ============ */
 $('#taskForm').addEventListener('submit', e => {
   e.preventDefault();
@@ -1593,6 +1623,7 @@ $('#historyBtn').addEventListener('click', () => {
   $('#historyModal').hidden = false;
 });
 $('#historyClose').addEventListener('click', () => { $('#historyModal').hidden = true; });
+$('#importBtn').addEventListener('click', doImport);
 
 $('#statsBtn').addEventListener('click', openStats);
 $('#statsClose').addEventListener('click', () => { $('#statsModal').hidden = true; });

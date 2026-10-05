@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('api', {
   onDataSnapshot: cb => ipcRenderer.on('data:snapshot', (_e, snapshot) => cb(snapshot)),
   // 書き出す内容は main が持つ正本なので、レンダラからデータは渡さない。
   exportData: format => ipcRenderer.invoke('data:export', { format }),
+  // ファイルの選択・検証・確認・置き換えは main が行う。応答に置き換え後の正本が入る。
+  importData: () => ipcRenderer.invoke('data:import'),
   listSounds: () => ipcRenderer.invoke('sounds:list'),
   readSound: name => ipcRenderer.invoke('sounds:read', name),
   openSoundsDir: () => ipcRenderer.invoke('sounds:openDir'),

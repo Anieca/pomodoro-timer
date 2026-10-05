@@ -1,25 +1,7 @@
-import { _electron as electron } from 'playwright-core';
-import { ELECTRON, isAppError } from './test-env.mjs';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
+import { launchApp, assert } from './test-env.mjs';
 
 // 休憩中のホワイトノイズ(休憩用音源への切替)の検証
-const APP_DIR = path.resolve(import.meta.dirname, '..');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
-
-const app = await electron.launch({
-  executablePath: ELECTRON,
-  args: ['--no-sandbox', APP_DIR],
-  env: { ...process.env, POMODORO_USER_DATA: userData },
-  timeout: 30000
-});
-const page = await app.firstWindow();
-const errors = [];
-page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
-page.on('pageerror', e => errors.push(String(e)));
-await page.waitForSelector('#startBtn', { timeout: 15000 });
-await page.waitForFunction(() => typeof openTimeline === 'function' && Array.isArray(soundsCache), { timeout: 15000 });
+const { page, errors, close } = await launchApp();
 
 const click = sel => page.evaluate(s => document.querySelector(s).click(), sel);
 const indicatorVisible = () => page.evaluate(() => !document.querySelector('#noiseIndicator').hidden);
@@ -77,7 +59,6 @@ console.log('settings break select:', JSON.stringify(ui));
 console.log('persisted breakFile:', saved);
 console.log('errors:', errors.length ? errors : 'none');
 
-const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 assert(fileFor.work === 'white-noise.wav', 'work uses focus sound');
 assert(fileFor.short === 'brown-noise.wav' && fileFor.long === 'brown-noise.wav', 'breaks use break sound (short & long)');
 assert(workActive, 'noise active during focus');
@@ -90,6 +71,5 @@ assert(ui.opts.includes('pink-noise.wav') && ui.hasPreview, 'break select lists 
 assert(saved === 'pink-noise.wav', 'changed breakFile persists');
 assert(errors.length === 0, 'no console/page errors');
 
-await app.close();
-fs.rmSync(userData, { recursive: true, force: true });
+await close();
 console.log(process.exitCode ? 'DONE (with failures)' : 'OK');

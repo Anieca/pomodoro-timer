@@ -1,38 +1,26 @@
-import { _electron as electron } from 'playwright-core';
-import { ELECTRON, isAppError } from './test-env.mjs';
+// UI のスクリーンショットを撮る(テストではない。見た目の確認や README・PR 用)。
+//   node scripts/shots.mjs [出力先]   既定は <OS の一時ディレクトリ>/pomodoro-shots
+// 動作の検証は smoke-*.mjs が受け持つ。ここで失敗とするのは、撮影中のコンソールエラーだけ。
+import { launchApp, waitForApp, dataFile } from './test-env.mjs';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as os from 'node:os';
+import * as path from 'node:path';
 
-const APP_DIR = path.resolve(import.meta.dirname, '..');
-const SHOTS = '/tmp/pomodoro-shots';
+const SHOTS = path.resolve(process.argv[2] ?? path.join(os.tmpdir(), 'pomodoro-shots'));
 fs.mkdirSync(SHOTS, { recursive: true });
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
 
-const app = await electron.launch({
-  executablePath: ELECTRON,
-  args: ['--no-sandbox', APP_DIR],
-  env: { ...process.env, POMODORO_USER_DATA: userData },
-  timeout: 30000
-});
-const page = await app.firstWindow();
-await page.waitForSelector('#startBtn', { timeout: 15000 });
-await page.waitForTimeout(1000);
-const errors = [];
-page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
+const { page, errors, userData, close } = await launchApp();
 const click = sel => page.evaluate(s => document.querySelector(s).click(), sel);
 const ss = name => page.screenshot({ path: path.join(SHOTS, name + '.png') });
 
 // 保存ファイルを直接書き換えて読み直させる(スクリーンショット用の下ごしらえ)。
 // 正本を持つのは main なので、レンダラ側から履歴を作ったり消したりはできない。
-const dataFile = path.join(userData, 'pomodoro-data.json');
 async function reseed(edit) {
-  const d = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+  const d = JSON.parse(fs.readFileSync(dataFile(userData), 'utf8'));
   edit(d);
-  fs.writeFileSync(dataFile, JSON.stringify(d, null, 2));
+  fs.writeFileSync(dataFile(userData), JSON.stringify(d, null, 2));
   await page.evaluate(() => location.reload());
-  await page.waitForSelector('#startBtn', { timeout: 15000 });
-  await page.waitForTimeout(800);
+  await waitForApp(page);
 }
 
 // 空状態(クイック追加フォーム)
@@ -110,7 +98,9 @@ await page.hover('#taskList .task-item');
 await page.waitForTimeout(300);
 await ss('d9-task-hover');
 
-console.log('console errors:', errors.length ? errors : 'none');
-await app.close();
-fs.rmSync(userData, { recursive: true, force: true });
-console.log('OK ->', SHOTS);
+await close();
+if (errors.length) {
+  console.error('console errors:', errors);
+  process.exitCode = 1;
+}
+console.log(`${errors.length ? 'DONE (with console errors)' : 'OK'} -> ${SHOTS}`);

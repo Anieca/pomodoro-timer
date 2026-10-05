@@ -1,8 +1,4 @@
-import { _electron as electron } from 'playwright-core';
-import { ELECTRON, isAppError } from './test-env.mjs';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
+import { launchApp, assert } from './test-env.mjs';
 
 // システムスリープを実働から除く仕組みの検証。
 //
@@ -23,21 +19,7 @@ import * as os from 'node:os';
 //  AB) suspend の通知ごと取り逃しても、tick の飛びから自力で補正する
 //  AC) 終了時の記録(beforeunload)でも睡眠を実働にしない
 //  AD) 通知を取り逃したまま tick より先に停止されても補正する
-const APP_DIR = path.resolve(import.meta.dirname, '..');
-
-const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
-
-const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
-const app = await electron.launch({
-  executablePath: ELECTRON, args: ['--no-sandbox', APP_DIR],
-  env: { ...process.env, POMODORO_USER_DATA: ud }, timeout: 30000
-});
-const page = await app.firstWindow();
-const errors = [];
-page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
-page.on('pageerror', e => errors.push(String(e)));
-await page.waitForSelector('#startBtn', { timeout: 15000 });
-await page.waitForFunction(() => typeof applySleep === 'function', { timeout: 15000 });
+const { app, page, errors, close } = await launchApp();
 
 const H3 = 3 * 60 * 60 * 1000;
 const MIN = 60 * 1000;
@@ -368,6 +350,5 @@ let tGot;                                   // U でも同じセッションの�
 console.log('errors=', errors);
 assert(errors.length === 0, 'コンソール/ページエラーが出ない');
 
-await app.close();
-fs.rmSync(ud, { recursive: true, force: true });
-console.log(process.exitCode ? '\nsmoke24: FAILED' : '\nsmoke24: OK');
+await close();
+console.log(process.exitCode ? '\nFAILED' : '\nOK');

@@ -166,6 +166,8 @@ async function init() {
   // 読み込み時の警告(破損退避・回復・権限エラー)があればトーストで知らせる。
   const loadWarning = await window.api.consumeLoadWarning();
   if (loadWarning) toast(loadWarning);
+  // 初期化の完了をテスト(scripts/test-env.mjs の waitForApp)が待つための目印
+  document.documentElement.dataset.ready = '';
 }
 
 function renderAll() {

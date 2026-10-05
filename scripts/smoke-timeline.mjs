@@ -1,18 +1,12 @@
-import { _electron as electron } from 'playwright-core';
-import { ELECTRON, isAppError } from './test-env.mjs';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
+import { launchApp, assert } from './test-env.mjs';
 
 // タイムテーブル(1日ビュー)表示の検証。
 // 分スケールの確定データを仕込み、ブロック配置・一時停止ギャップ・ナビを検証する。
-const APP_DIR = path.resolve(import.meta.dirname, '..');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
 
 // 当日のローカル時刻で ISO を作る(タイムテーブルはローカル時刻で配置する)
 const at = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return d.toISOString(); };
 
-fs.writeFileSync(path.join(userData, 'pomodoro-data.json'), JSON.stringify({
+const { page, errors, close } = await launchApp({ seed: {
   tasks: [{ id: 't1', title: '設計レビュー', completed: false, createdAt: at(9, 0), completedAt: null }],
   sessions: [
     // フォーカス: 10:00–10:30 / (5分停止) / 10:35–11:05 = 実働2区間(各30分)
@@ -26,21 +20,7 @@ fs.writeFileSync(path.join(userData, 'pomodoro-data.json'), JSON.stringify({
   ],
   selectedTaskId: null,
   settings: { workMin: 25, shortMin: 5, longMin: 15, longEvery: 4 }
-}));
-
-const app = await electron.launch({
-  executablePath: ELECTRON,
-  args: ['--no-sandbox', APP_DIR],
-  env: { ...process.env, POMODORO_USER_DATA: userData },
-  timeout: 30000
-});
-const page = await app.firstWindow();
-const errors = [];
-page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
-page.on('pageerror', e => errors.push(String(e)));
-await page.waitForSelector('#startBtn', { timeout: 15000 });
-// app.js の評価とイベント配線が終わるまで待つ(#startBtn は静的 HTML で先に出る)
-await page.waitForFunction(() => typeof openTimeline === 'function', { timeout: 15000 });
+} });
 
 const click = sel => page.evaluate(s => document.querySelector(s).click(), sel);
 
@@ -81,7 +61,6 @@ console.log('work gap(px):', Math.round(gap), '(5分停止 → 0.7px/分で約3.
 console.log('nav: today=', dToday, 'prev=', dPrev, '(empty:', prevEmpty, ') back=', dBack);
 console.log('console/page errors:', errors.length ? errors : 'none');
 
-const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 assert(!view.hidden, 'timeline modal opened');
 assert(view.blocks.length === 3, '3 blocks (2 work intervals + 1 break)');
 assert(workBlocks.length === 2, 'paused work split into 2 blocks');
@@ -96,6 +75,5 @@ assert(prevEmpty, 'previous (empty) day shows empty note');
 assert(dBack === dToday, 'today button restores current day');
 assert(errors.length === 0, 'no console/page errors');
 
-await app.close();
-fs.rmSync(userData, { recursive: true, force: true });
+await close();
 console.log(process.exitCode ? 'DONE (with failures)' : 'OK');

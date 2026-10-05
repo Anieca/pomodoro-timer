@@ -1,5 +1,5 @@
 import { _electron as electron } from 'playwright-core';
-import electronPath from 'electron';
+import { ELECTRON, isAppError } from './test-env.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -58,13 +58,12 @@ const seed = {
 const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
 fs.writeFileSync(path.join(ud, 'pomodoro-data.json'), JSON.stringify(seed));
 const app = await electron.launch({
-  executablePath: electronPath, args: ['--no-sandbox', APP_DIR],
+  executablePath: ELECTRON, args: ['--no-sandbox', APP_DIR],
   env: { ...process.env, POMODORO_USER_DATA: ud }, timeout: 30000
 });
 const page = await app.firstWindow();
 const errors = [];
-// 外部フォントの読み込み失敗(オフライン・プロキシ環境)は統計と無関係なので数えない
-page.on('console', m => { if (m.type() === 'error' && !m.text().startsWith('Failed to load resource')) errors.push(m.text()); });
+page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
 page.on('pageerror', e => errors.push(String(e)));
 await page.waitForSelector('#startBtn', { timeout: 15000 });
 await page.waitForFunction(() => typeof computeStats === 'function' && data.sessions.length > 0, { timeout: 15000 });

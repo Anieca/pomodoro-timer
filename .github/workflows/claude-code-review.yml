@@ -45,6 +45,7 @@ jobs:
 
             Override for step 1: treat "Claude has already commented on this PR" as true only if a previous Claude comment references head commit ${{ github.event.pull_request.head.sha }}. Comments about older commits do not stop the review.
             Every summary or inline comment you post must include the line "Reviewed commit: ${{ github.event.pull_request.head.sha }}".
+            When issues were found, also post a top-level summary comment with `gh pr comment` after the inline comments, since `gh pr view --comments` does not show inline comments and step 1 relies on it.
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 

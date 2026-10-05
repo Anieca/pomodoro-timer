@@ -650,7 +650,7 @@ function recordSession(completed, sync) {
   if (c.mode === 'work') closeSegment();
   const rec = { c, completed, elapsedSec, endedAt: c.intervals.length ? c.intervals[c.intervals.length - 1].endedAt : new Date().toISOString() };
   // 見込みで付けた内訳がまだ決着していなければ、決着まで送らずに持つ(送ってから
-  // では直せない)。終了時(sync)は待てないので、その時点の付け先のまま送る。
+  // では直せない)。終了時(sync)は待てないので、beforeunload が正本で付け直してから呼ぶ。
   if (sync) window.api.mutateSync(sessionAction(rec));
   else if (isHeld(rec)) heldRecords.push(rec);
   else sendSession(rec);
@@ -1451,6 +1451,13 @@ window.addEventListener('beforeunload', () => {
   // 書けたと確認できていない記録と進行状態を、送信中のものも含めて送る(失敗の
   // 応答はもう受け取れない。記録の重複は main が弾き、進行状態は最新値で上書き)。
   for (const p of pending) if (p.durable) window.api.mutateSync(p.action);
+  // 応答待ちの意図で付けた内訳は、決着を待てないので main の今の正本の選択で付け直す
+  // (送った意図はすべて反映済み)。待っていた記録も実行中の記録も、そのあとで送る。
+  // 選択を続けて変えていた場合は、どれも最後の正本の選択に寄る。
+  if (unsettled.size) {
+    const snap = window.api.snapshotSync();
+    if (snap) for (const s of unsettled) settleSegments(s, snap.selectedTaskId);
+  }
   for (const rec of heldRecords.splice(0)) window.api.mutateSync(sessionAction(rec));
   if (timer.current) recordSession(false, true);
 });

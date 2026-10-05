@@ -416,6 +416,10 @@ ipcMain.handle('data:load', e => {
 // 返すのは定数の既定値だけで、渡す情報は無い。
 ipcMain.on('data:defaults', e => { e.returnValue = DEFAULT_SETTINGS; });
 
+// 終了直前に正本を同期で読む(beforeunload 用)。main は意図を受け取った順に処理する
+// ので、ここで返す正本にはレンダラが送った意図がすべて反映されている。
+ipcMain.on('data:snapshot-sync', e => { e.returnValue = isTrusted(e) ? store : null; });
+
 // 読み込み時警告を一度だけ回収する(レンダラがトースト表示に使う)。
 ipcMain.handle('data:consume-warning', e => {
   if (!isTrusted(e)) return null;

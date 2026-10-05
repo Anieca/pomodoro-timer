@@ -15,7 +15,7 @@ import * as os from 'node:os';
 //  U) 応答待ちの意図はすぐ画面に出て、失敗したら正本に戻る
 //  V) 見込みで付けた実働は、意図の決着後の正本の選択に付け直す(失敗・正規化)
 //  W) 書けなかった記録と進行状態は、書けるようになったら送り直す
-//  X) 失敗の応答を待つ間に終了しても、記録は終了時に書かれる
+//  X) 応答を待つ間に終了しても、記録は正しい付け先で終了時に書かれる
 //  Y) 削除の取り消しは main の控えで戻す(応答待ちの編集も、その間の記録も失わない)
 //  Z) 取り消しは応答を待たずに送られ、失敗したらもう一度出る
 //  AA) 取り消しのボタンは、あとから来た保存失敗の通知で消えない
@@ -334,30 +334,39 @@ for (const kind of ['fail', 'normalized']) {
   fs.rmSync(ud, { recursive: true, force: true });
 }
 
-/* ===== X: 失敗の応答を待つ間に終了しても記録は残る ===== */
-{
+/* ===== X: 応答を待つ間に終了しても、記録は正しい付け先で書かれる ===== */
+// record: 記録の保存が遅れて失敗する / focus: 選択の保存が遅れて失敗する(実行中の
+// 記録は終了時に書かれるが、選べなかったタスクに付けてはいけない)。
+for (const kind of ['record', 'focus']) {
   const ud = mkdir();
   const { app, page } = await launch(ud);
-  await page.evaluate(async t => {
-    await mutate({ type: 'task/add', task: t });
-    await mutate({ type: 'task/select', id: t.id });
+  await page.evaluate(async ts => {
+    for (const t of ts) await mutate({ type: 'task/add', task: t });
+    await mutate({ type: 'task/select', id: 'x1' });
     startPauseResume();
-  }, task('x1', '作業中のタスク'));
+  }, [task('x1', '作業中のタスク'), task('x2', '選び損ねるタスク')]);
   await page.waitForTimeout(1200);
-  await slowThenFailNextWrite(app, 800);
-  // 記録を送った直後(失敗の応答が届く前)に終了処理を走らせ、そのままレンダラを
-  // 止める(破棄されたのと同じく、以降の応答は処理されない)。止まっている間に
-  // ディスクを見れば、終了時の同期送信で書けたかだけが分かる。
-  const busy = page.evaluate(() => {
-    finishSession(true);
+  // 失敗の応答は、終了処理が走ったあとに届くよう遅らせる。
+  await slowThenFailNextWrite(app, kind === 'record' ? 800 : 2500);
+  // 送った直後(失敗の応答が届く前)に終了処理を走らせ、そのままレンダラを止める
+  // (破棄されたのと同じく、以降の応答は処理されない)。止まっている間にディスクを
+  // 見れば、終了時の同期送信で何が書けたかだけが分かる。
+  const busy = page.evaluate(async kind => {
+    if (kind === 'record') finishSession(true);
+    else {
+      selectTask('x2');
+      await new Promise(r => setTimeout(r, 1100));
+      timer.current.intStartAt -= 61000;   // 終了時に記録されるのは 1 分以上の中断だけ
+    }
     window.dispatchEvent(new Event('beforeunload'));
-    const end = Date.now() + 2500; while (Date.now() < end);
-  });
-  await new Promise(r => setTimeout(r, 1500));
+    const end = Date.now() + 3000; while (Date.now() < end);
+  }, kind);
+  await new Promise(r => setTimeout(r, kind === 'record' ? 1500 : 3000));
   const saved = readData(ud).sessions;
   await busy;
-  console.log('X: sessions=', JSON.stringify(saved.map(x => x.taskIds)));
-  assert(saved.length === 1 && saved[0].taskIds.includes('x1'), 'X: 終了時の同期送信で記録が書かれる(二重にならない)');
+  console.log(`X(${kind}): sessions=`, JSON.stringify(saved.map(x => x.taskTimes)));
+  assert(saved.length === 1 && saved[0].taskIds.includes('x1'), `X(${kind}): 終了時の同期送信で記録が書かれる(二重にならない)`);
+  assert(saved.length === 1 && saved[0].taskTimes.every(tt => tt.taskId !== 'x2'), `X(${kind}): 選べなかったタスクには付かない`);
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('api', {
   mutate: action => ipcRenderer.invoke('data:mutate', action),
   // 終了時にレンダラ破棄前の書き込み完了を保証するための同期の意図(beforeunload 用)。
   mutateSync: action => ipcRenderer.sendSync('data:mutate-sync', action),
+  // 同じく終了時に、送った意図がすべて反映された正本を同期で読む。
+  snapshotSync: () => ipcRenderer.sendSync('data:snapshot-sync'),
   // 読み込み時の警告(破損退避/回復/権限エラー)を一度だけ回収する。
   consumeLoadWarning: () => ipcRenderer.invoke('data:consume-warning'),
   // main → レンダラ:他のウィンドウの変更で正本が動いたときのスナップショット。

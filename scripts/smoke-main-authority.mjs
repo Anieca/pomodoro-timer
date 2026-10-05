@@ -26,7 +26,7 @@ const readData = ud => JSON.parse(fs.readFileSync(dataFile(ud), 'utf8'));
 const task = (id, title) => ({ id, title, completed: false, createdAt: new Date().toISOString(), completedAt: null });
 
 // 各ケースは起動前に userData へファイルを仕込み、終わったら自分で消す。
-// launchApp は init() の完了まで待つので、壊れたデータで init が途中で投げれば時間切れで落ちる。
+// launchApp は init() の完了まで待つ。壊れたデータで init が途中で投げれば errors に入って落ちる。
 const launch = userData => launchApp({ userData });
 
 const stubSaveDialog = (app, filePath) => app.evaluate(({ dialog }, fp) => {

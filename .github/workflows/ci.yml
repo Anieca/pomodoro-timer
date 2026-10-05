@@ -22,10 +22,7 @@ jobs:
       - run: npm ci
       - name: Syntax check
         run: |
-          node --check main.js
-          node --check preload.js
-          node --check renderer/app.js
-          node --check renderer/mini.js
+          for f in main.js preload.js main/*.js shared/*.js renderer/*.js; do node --check "$f"; done
       - name: Smoke tests
         # Linux はディスプレイが無いので仮想ディスプレイ上で起動する
         run: ${{ runner.os == 'Linux' && 'xvfb-run -a npm test' || 'npm test' }}

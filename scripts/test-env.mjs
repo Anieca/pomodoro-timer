@@ -27,10 +27,12 @@ export const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg);
 export const tempUserData = () => fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
 export const dataFile = userData => path.join(userData, 'pomodoro-data.json');
 
-// init() が最後まで走り終えるのを待つ(読み込み・音源一覧・読み込み時の警告まで)。
+// レンダラの初期化(保存データの読み込み・音源一覧・読み込み時の警告まで)が済むまで待つ。
 // #startBtn は静的 HTML なので先に出るし、関数宣言は巻き上げで評価直後から見えるため、
-// どちらも準備完了の目印にならない。init が途中で投げれば data-ready は付かず時間切れになる。
-export const waitForApp = page => page.waitForSelector('html[data-ready]', { state: 'attached', timeout: 15000 });
+// どちらも準備完了の目印にならない。init が途中で投げても印は付き(renderer/app.js)、
+// そのときはタイムアウトではなく errors に集めたページエラーで落ちる。
+export const waitForApp = (page, timeout = 15000) =>
+  page.waitForSelector('html[data-ready="true"]', { state: 'attached', timeout });
 
 // 一時的な userData でアプリを起動し、準備完了まで待つ。
 //  seed:         pomodoro-data.json に書く中身(オブジェクトは JSON 化、文字列はそのまま)

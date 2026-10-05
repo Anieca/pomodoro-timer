@@ -126,13 +126,16 @@
       <h2>ポモドーロ履歴</h2>
       <ul id="historyList" class="history-list"></ul>
       <div class="modal-actions history-actions">
-        <div class="export-wrap">
-          <button id="exportBtn" class="secondary-btn">↧ エクスポート</button>
-          <div id="exportMenu" class="menu" hidden>
-            <button data-format="json">JSON(全データ)</button>
-            <button data-format="csv-sessions">CSV(セッション履歴)</button>
-            <button data-format="csv-tasks">CSV(タスク)</button>
+        <div class="history-io">
+          <div class="export-wrap">
+            <button id="exportBtn" class="secondary-btn">↧ エクスポート</button>
+            <div id="exportMenu" class="menu" hidden>
+              <button data-format="json">JSON(全データ)</button>
+              <button data-format="csv-sessions">CSV(セッション履歴)</button>
+              <button data-format="csv-tasks">CSV(タスク)</button>
+            </div>
           </div>
+          <button id="importBtn" class="secondary-btn" title="JSON(全データ)から読み込んで、今のデータを置き換えます">↥ インポート</button>
         </div>
         <button id="historyClose" class="primary-btn">閉じる</button>
       </div>

@@ -181,6 +181,26 @@ function normalizeData(raw) {
   };
 }
 
+// インポートするファイルの中身(文字列)を検証して正規化する。
+// normalizeData はどんな入力も「空のデータ」として受け入れるので、そのまま通すと
+// 別のアプリの JSON や `{}` で正本が黙って空に置き換わる。このアプリの保存データ
+// (または JSON エクスポート)と分かる形、すなわちタスクか記録の配列を持つ
+// オブジェクトだけを通す。
+// 返り値は { ok: true, data, counts } か { ok: false, error }。
+function parseImport(text) {
+  let raw;
+  try {
+    raw = JSON.parse(String(text).replace(/^﻿/, ''));
+  } catch {
+    return { ok: false, error: 'JSON として読み込めませんでした' };
+  }
+  const looksLikeData = raw && typeof raw === 'object' && !Array.isArray(raw) &&
+    ['tasks', 'sessions', 'pomodoros'].some(k => Array.isArray(raw[k]));
+  if (!looksLikeData) return { ok: false, error: 'このアプリのデータではありません(タスクや記録が見つかりません)' };
+  const data = normalizeData(raw);
+  return { ok: true, data, counts: { tasks: data.tasks.length, sessions: data.sessions.length } };
+}
+
 // レンダラ(<script>)では関数がそのまま global に出る。
 if (typeof module !== 'undefined') module.exports = {
   DEFAULT_SETTINGS,
@@ -188,6 +208,7 @@ if (typeof module !== 'undefined') module.exports = {
   MODES,
   MODE_LABEL,
   normalizeData,
+  parseImport,
   normalizeSession,
   clampSettings,
   clampInt,

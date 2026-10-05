@@ -22,7 +22,8 @@ const TESTS = [
   'smoke-noise-load-failure.mjs',
   'smoke-corrupt-data.mjs',
   'smoke-unreadable-data.mjs',
-  'smoke-main-authority.mjs'
+  'smoke-main-authority.mjs',
+  'smoke-import.mjs'
 ];
 // scripts/shots.mjs はスクリーンショット撮影用で、テストではないのでここには入れない。
 

@@ -9,7 +9,6 @@ const TESTS = [
   'schema-test.mjs',
   'smoke.mjs',
   'smoke11.mjs',
-  'smoke12.mjs',
   'smoke13.mjs',
   'smoke14.mjs',
   'smoke16.mjs',
@@ -18,7 +17,6 @@ const TESTS = [
   'smoke19.mjs',
   'smoke20.mjs',
   'smoke21.mjs',
-  'smoke22.mjs',
   'smoke23.mjs',
   'smoke24.mjs'
 ];

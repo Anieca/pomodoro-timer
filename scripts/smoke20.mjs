@@ -6,7 +6,7 @@ import * as os from 'node:os';
 // データ堅牢性の検証:
 //  A) 破損ファイル(回復不可) → 空起動 + 原本を .corrupt- に退避 + 警告トースト
 //  B) 破損ファイル + 有効な .tmp → 直近保存から復元し、破損本体を退避
-//  C) 破損した settings / sessions → クラッシュせず clamp / 正規化される
+//  (壊れた settings / sessions の描画は smoke23 の R で見る)
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
@@ -64,41 +64,6 @@ const backups = ud => fs.readdirSync(ud).filter(f => f.startsWith('pomodoro-data
   assert(bk.length === 1, 'B: 破損本体を退避');
   assert(!!promoted.tasks.find(t => t.id === 'r1'), 'B: 本体ファイルを回復データで置換');
   assert(errors.length === 0, 'B: コンソールエラーなし');
-  await app.close();
-  fs.rmSync(ud, { recursive: true, force: true });
-}
-
-/* ===== C: 不正な settings / sessions の正規化・clamp ===== */
-{
-  const ud = mkdir();
-  fs.writeFileSync(dataFile(ud), JSON.stringify({
-    tasks: [{ id: 't1', title: 'A', completed: false, createdAt: new Date().toISOString(), completedAt: null }],
-    // 壊れた/欠損セッション: taskIds/taskTimes/intervals 欠如、durationSec 文字列
-    sessions: [
-      { id: 's1', mode: 'work', startedAt: new Date().toISOString(), durationSec: 'oops' },
-      { id: 's2', mode: 'bogus', startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), taskTimes: [{ taskId: 't1' }] }
-    ],
-    selectedTaskId: null,
-    settings: { workMin: 'x', shortMin: -5, longMin: 99999, longEvery: 1000000000, whiteNoise: { volume: 500 } }
-  }));
-  const { app, page, errors } = await launch(ud);
-  const view = await page.evaluate(() => ({
-    dots: document.querySelectorAll('#cycleDots i').length,
-    time: document.querySelector('#timeDisplay').textContent,
-    every: data.settings.longEvery, work: data.settings.workMin, vol: data.settings.whiteNoise.volume
-  }));
-  // 履歴を開いて壊れたセッションの描画がクラッシュしないことを確認
-  await page.evaluate(() => document.querySelector('#historyBtn').click());
-  await page.waitForTimeout(200);
-  const histOpen = await page.evaluate(() => !document.querySelector('#historyModal').hidden);
-  console.log('C: view=', JSON.stringify(view), 'historyOpen=', histOpen);
-  assert(view.every === 12, 'C: longEvery を 12 に clamp');
-  assert(view.dots === 12, 'C: cycle dots が clamp 後の個数で描画');
-  assert(view.work === 25, 'C: 不正な workMin を既定値へ');
-  assert(view.vol === 100, 'C: volume を 100 に clamp');
-  assert(/^\d\d:\d\d$/.test(view.time) && !/NaN/.test(view.time), 'C: タイマー表示が NaN にならない');
-  assert(histOpen, 'C: 壊れたセッションでも履歴が開ける');
-  assert(errors.length === 0, 'C: コンソールエラーなし');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }

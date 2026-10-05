@@ -6,13 +6,17 @@ contextBridge.exposeInMainWorld('api', {
   // ウィンドウ描画前の preload 実行時に一度だけなので同期で構わない。
   defaultSettings: ipcRenderer.sendSync('data:defaults'),
   loadData: () => ipcRenderer.invoke('data:load'),
-  saveData: data => ipcRenderer.invoke('data:save', data),
-  // 終了時にレンダラ破棄前の書き込み完了を保証するための同期保存(beforeunload 用)。
-  saveDataSync: data => ipcRenderer.sendSync('data:save-sync', data),
+  // 変更は「何をしたいか」だけを送る。正本を持つのは main なので、レンダラは
+  // データを組み立てて渡さない。応答に適用後の正本(snapshot)が入って返る。
+  mutate: action => ipcRenderer.invoke('data:mutate', action),
+  // 終了時にレンダラ破棄前の書き込み完了を保証するための同期の意図(beforeunload 用)。
+  mutateSync: action => ipcRenderer.sendSync('data:mutate-sync', action),
+  // 同じく終了時に、送った意図がすべて反映された正本を同期で読む。
+  snapshotSync: () => ipcRenderer.sendSync('data:snapshot-sync'),
   // 読み込み時の警告(破損退避/回復/権限エラー)を一度だけ回収する。
   consumeLoadWarning: () => ipcRenderer.invoke('data:consume-warning'),
-  // main → レンダラ:正本が変わったときのスナップショット。自分の保存も返ってくる
-  // ので、main の正規化で直された値がそのまま画面に反映される。
+  // main → レンダラ:他のウィンドウの変更で正本が動いたときのスナップショット。
+  // 自分が出した変更は mutate の戻り値で受け取るので、ここには来ない。
   onDataSnapshot: cb => ipcRenderer.on('data:snapshot', (_e, snapshot) => cb(snapshot)),
   // 書き出す内容は main が持つ正本なので、レンダラからデータは渡さない。
   exportData: format => ipcRenderer.invoke('data:export', { format }),

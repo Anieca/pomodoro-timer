@@ -178,10 +178,9 @@ let tGot;                                   // U でも同じセッションの�
   // 復帰時、tick(250ms)は power:resume より先に走りうる。そこで予定終了の超過を
   // 検知されると補正が届く前に完了扱いになり、この PR が直そうとしている
   // 「眠っていた分を丸ごと実働に計上する」挙動がそのまま残ってしまう。
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     // 自動開始が W 以降の状態に混ざらないよう切っておく
-    data.settings.autoStartBreak = false;
-    data.settings.autoStartWork = false;
+    await mutate({ type: 'settings/update', patch: { autoStartBreak: false, autoStartWork: false } });
     if (timer.status !== 'idle') stopEarly();
     timer.mode = 'work';
     startPauseResume();

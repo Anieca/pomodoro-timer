@@ -27,7 +27,13 @@ const afterSpace2 = await page.evaluate(() => document.querySelector('#phaseLabe
 await page.evaluate(() => document.querySelector('#stopBtn').click());
 await page.waitForTimeout(300);
 // 休憩はオートサイクルで入る: フォーカスを極小にして完走 → 小休憩へ → スキップボタン
-await page.evaluate(() => { data.settings.workMin = 0.05; data.settings.autoStartBreak = false; });
+// テスト用に短いフォーカス/休憩へ。設定は 1 分未満にできない(正規化で丸まる)ので、
+// モード長を求める関数だけを差し替える。data を直接書き換えても、次の意図の応答で
+// 正本のスナップショットに戻されるため効かない。
+await page.evaluate(async () => {
+  modeDurationMs = () => 3000;
+  await mutate({ type: 'settings/update', patch: { autoStartBreak: false } });
+});
 await page.evaluate(() => document.querySelector('#startBtn').click());
 await page.waitForFunction(() => timer.mode !== 'work', null, { timeout: 15000 });
 await page.waitForTimeout(300);

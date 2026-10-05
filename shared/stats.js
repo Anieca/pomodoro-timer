@@ -25,6 +25,17 @@ const dayKey = d => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 // 区間を持たない記録だけ span を使う(schema.js の正規化後は必ず配列を持つ)
 const intervalsOf = s => (Array.isArray(s.intervals) ? s.intervals : [{ startedAt: s.startedAt, endedAt: s.endedAt }]);
 
+// フォーカス記録のタスク別内訳。旧 pomodoros 形式から移ってきた記録は内訳
+// (taskTimes)を持たない。落とすと集中時間には出るのにタスク別が空になるので、
+// タスクが一つに決まればそこへ、決まらなければ「タスクなし」へ丸ごと積む。
+// 統計のタスク別とサイドバーのタスクごとの集計で同じ決まりを使う。
+function taskTimesOf(s) {
+  if (Array.isArray(s.taskTimes) && s.taskTimes.length) return s.taskTimes;
+  const taskIds = Array.isArray(s.taskIds) ? s.taskIds : [];
+  const sec = Number.isFinite(s.durationSec) ? s.durationSec : 0;
+  return [{ taskId: taskIds.length === 1 ? taskIds[0] : null, durationSec: sec }];
+}
+
 // end を含む直近 days 日([end の days-1 日前 0:00, end の翌 0:00))を集計する。
 function summarizeStats(sessions, { end, days }) {
   const n = Math.max(1, Math.floor(days));
@@ -74,13 +85,7 @@ function summarizeStats(sessions, { end, days }) {
     focusSec += sec;
     row.focusSec += sec;
     if (s.completed) { pomos++; row.pomos++; }
-    // 旧 pomodoros 形式から移ってきた記録は内訳(taskTimes)を持たない。落とすと
-    // 集中時間には出るのにタスク別が空になるので、タスクが一つに決まればそこへ、
-    // 決まらなければ「タスクなし」へ丸ごと積む。
-    const taskIds = Array.isArray(s.taskIds) ? s.taskIds : [];
-    const times = Array.isArray(s.taskTimes) && s.taskTimes.length ? s.taskTimes
-      : [{ taskId: taskIds.length === 1 ? taskIds[0] : null, durationSec: sec }];
-    for (const tt of times) {
+    for (const tt of taskTimesOf(s)) {
       const id = tt.taskId ?? null;
       taskSec.set(id, (taskSec.get(id) || 0) + tt.durationSec);
     }
@@ -125,4 +130,4 @@ function currentStreak(sessions, today) {
 }
 
 // レンダラ(<script>)では関数がそのまま global に出る。
-if (typeof module !== 'undefined') module.exports = { summarizeStats, currentStreak, addLocalDays };
+if (typeof module !== 'undefined') module.exports = { summarizeStats, currentStreak, addLocalDays, taskTimesOf };

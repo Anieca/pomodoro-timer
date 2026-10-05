@@ -174,6 +174,8 @@ function renderAll() {
   renderFocusTask();
   renderCycleDots();
   renderTodayCount();
+  // 開いている間に記録・削除・名前の変更が入っても古い集計を見せない
+  if (!$('#statsModal').hidden) renderStats();
 }
 
 /* ============ タスク ============ */
@@ -1294,6 +1296,170 @@ function shiftTimelineDay(days) {
   renderTimeline();
 }
 
+/* ============ 統計 ============ */
+// 集計は shared/stats.js(純粋関数)に任せ、ここは描くだけ。
+let statsDays = 7;
+
+// 秒 → "1時間20分" / "45分"
+function fmtDur(sec) {
+  const m = Math.round(sec / 60);
+  const h = Math.floor(m / 60);
+  return h ? `${h}時間${m % 60 ? `${m % 60}分` : ''}` : `${m}分`;
+}
+
+const fmtMonthDay = d => `${d.getMonth() + 1}/${d.getDate()}`;
+
+function statTile(label, value, sub) {
+  const el = document.createElement('div');
+  el.className = 'stats-kpi';
+  const l = document.createElement('span');
+  l.className = 'stats-kpi-label';
+  l.textContent = label;
+  const v = document.createElement('span');
+  v.className = 'stats-kpi-value';
+  // 数字だけを大きく、単位は小さく(「52時間49分」でもタイルに収まるように)
+  for (const part of value.match(/\d+(?:\.\d+)?|\D+/g) || []) {
+    if (/^\d/.test(part)) v.appendChild(document.createTextNode(part));
+    else {
+      const u = document.createElement('small');
+      u.textContent = part;
+      v.appendChild(u);
+    }
+  }
+  el.append(l, v);
+  if (sub) {
+    const s = document.createElement('span');
+    s.className = 'stats-kpi-sub';
+    s.textContent = sub;
+    el.appendChild(s);
+  }
+  return el;
+}
+
+function renderStats() {
+  const today = startOfDay(new Date());
+  const cur = summarizeStats(data.sessions, { end: today, days: statsDays });
+  const prev = summarizeStats(data.sessions, { end: addLocalDays(today, -statsDays), days: statsDays });
+
+  document.querySelectorAll('#statsRange button').forEach(b => {
+    b.classList.toggle('active', Number(b.dataset.days) === statsDays);
+  });
+  const lastDay = new Date(cur.days[cur.days.length - 1].start);
+  $('#statsPeriod').textContent = `${fmtMonthDay(new Date(cur.start))} 〜 ${fmtMonthDay(lastDay)}`;
+
+  /* --- KPI --- */
+  const kpis = $('#statsKpis');
+  kpis.textContent = '';
+  const diffMin = Math.round((cur.focusSec - prev.focusSec) / 60);
+  const vsPrev = prev.focusSec === 0 ? '前の期間は記録なし'
+    : `前の${statsDays}日より ${diffMin >= 0 ? '+' : '−'}${fmtDur(Math.abs(diffMin) * 60)}`;
+  const streak = currentStreak(data.sessions, today);
+  kpis.append(
+    statTile('集中時間', fmtDur(cur.focusSec), vsPrev),
+    statTile('完了ポモドーロ', `${cur.pomos}🍅`, `1日平均 ${(cur.pomos / statsDays).toFixed(1)}`),
+    statTile('完走率', cur.completionRate === null ? '—' : `${Math.round(cur.completionRate * 100)}%`,
+      `${cur.workCount}回中 ${cur.pomos}回`),
+    statTile('連続日数', `${streak}日`, `記録のあった日 ${cur.activeDays}/${statsDays}`)
+  );
+
+  /* --- 日別の集中時間 --- */
+  const bars = $('#statsBars');
+  bars.textContent = '';
+  bars.classList.toggle('dense', statsDays > 31);
+  const maxSec = Math.max(...cur.days.map(d => d.focusSec));
+  const todayMs = today.getTime();
+  for (const d of cur.days) {
+    const day = new Date(d.start);
+    const col = document.createElement('div');
+    col.className = 'stats-bar-col' + (d.start === todayMs ? ' today' : '');
+    col.title = `${fmtMonthDay(day)} (${WEEKDAYS[day.getDay()]}) ${fmtDur(d.focusSec)} · ${d.pomos}🍅`;
+    const track = document.createElement('div');
+    track.className = 'stats-bar-track';
+    const bar = document.createElement('div');
+    bar.className = 'stats-bar';
+    bar.style.height = maxSec > 0 ? `${(d.focusSec / maxSec) * 100}%` : '0';
+    track.appendChild(bar);
+    const lab = document.createElement('span');
+    lab.className = 'stats-bar-label';
+    // 7日は曜日、それ以上は月曜だけ日付を出す(全部出すと詰まって読めない)
+    if (statsDays <= 7) lab.textContent = WEEKDAYS[day.getDay()];
+    else if (day.getDay() === 1) lab.textContent = fmtMonthDay(day);
+    col.append(track, lab);
+    bars.appendChild(col);
+  }
+  if (maxSec === 0) {
+    const note = document.createElement('div');
+    note.className = 'empty-note stats-empty';
+    note.textContent = 'この期間の記録はありません';
+    bars.appendChild(note);
+  }
+
+  /* --- 時間帯 --- */
+  const hoursEl = $('#statsHours');
+  hoursEl.textContent = '';
+  const maxHour = Math.max(...cur.hours);
+  cur.hours.forEach((sec, h) => {
+    const cell = document.createElement('div');
+    cell.className = 'stats-hour';
+    // 0 と僅かな値を見分けられるよう、記録があれば下限の濃さを付ける
+    cell.style.setProperty('--level', sec > 0 && maxHour > 0 ? String(0.15 + 0.85 * (sec / maxHour)) : '0');
+    cell.title = `${h}時台 ${fmtDur(sec)}`;
+    if (h % 6 === 0) {
+      const lab = document.createElement('span');
+      lab.textContent = String(h);
+      cell.appendChild(lab);
+    }
+    hoursEl.appendChild(cell);
+  });
+
+  /* --- タスク別 --- */
+  const list = $('#statsTasks');
+  list.textContent = '';
+  if (cur.tasks.length === 0) {
+    const li = document.createElement('li');
+    li.className = 'empty-note';
+    li.textContent = 'この期間の記録はありません';
+    list.appendChild(li);
+    return;
+  }
+  const TOP = 6;
+  const rows = cur.tasks.slice(0, TOP);
+  const rest = cur.tasks.slice(TOP).reduce((s, t) => s + t.sec, 0);
+  const total = cur.tasks.reduce((s, t) => s + t.sec, 0);
+  const label = id => {
+    if (id === null) return 'タスクなし';
+    const t = data.tasks.find(t => t.id === id);
+    return t ? t.title : '(削除済み)';
+  };
+  const items = rows.map(r => ({ name: label(r.taskId), sec: r.sec, muted: r.taskId === null }));
+  if (rest > 0) items.push({ name: `その他 ${cur.tasks.length - TOP}件`, sec: rest, muted: true });
+  // 「その他」は束ねた合計なので先頭より長くなりうる。棒は並んだ中の最大に合わせる
+  const maxItem = Math.max(...items.map(it => it.sec));
+  for (const it of items) {
+    const li = document.createElement('li');
+    li.className = 'stats-task' + (it.muted ? ' muted' : '');
+    const name = document.createElement('span');
+    name.className = 'stats-task-name';
+    name.textContent = it.name;
+    const val = document.createElement('span');
+    val.className = 'stats-task-val';
+    val.textContent = `${fmtDur(it.sec)} · ${Math.round((it.sec / total) * 100)}%`;
+    const track = document.createElement('div');
+    track.className = 'stats-task-track';
+    const bar = document.createElement('div');
+    bar.className = 'stats-task-bar';
+    bar.style.width = `${(it.sec / maxItem) * 100}%`;
+    track.appendChild(bar);
+    li.append(name, val, track);
+    list.appendChild(li);
+  }
+}
+
+function openStats() {
+  renderStats();
+  $('#statsModal').hidden = false;
+}
+
 /* ============ トースト ============ */
 let toastTimer = null;
 // 表示中の操作付きトースト(取り消しなど)。トーストは一枚なので、その間に届いた
@@ -1417,6 +1583,15 @@ $('#historyBtn').addEventListener('click', () => {
   $('#historyModal').hidden = false;
 });
 $('#historyClose').addEventListener('click', () => { $('#historyModal').hidden = true; });
+
+$('#statsBtn').addEventListener('click', openStats);
+$('#statsClose').addEventListener('click', () => { $('#statsModal').hidden = true; });
+$('#statsRange').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-days]');
+  if (!btn) return;
+  statsDays = Number(btn.dataset.days);
+  renderStats();
+});
 
 $('#timelineBtn').addEventListener('click', openTimeline);
 $('#timelineClose').addEventListener('click', () => { $('#timelineModal').hidden = true; });

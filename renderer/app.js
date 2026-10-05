@@ -113,7 +113,6 @@ function applySnapshot(snapshot) {
   project();
 }
 
-const MODE_LABEL = { work: 'フォーカス', short: '小休憩', long: '長休憩' };
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 const RING_LEN = 2 * Math.PI * 132;
 
@@ -1004,6 +1003,13 @@ function updateNoise() {
 }
 
 /* ============ 設定 ============ */
+// 設定の数値入力欄。範囲はスキーマの許容範囲から引く(HTML と二重管理しない)。
+const SETTING_INPUTS = { workMin: '#setWork', shortMin: '#setShort', longMin: '#setLong', longEvery: '#setEvery' };
+for (const [key, sel] of Object.entries(SETTING_INPUTS)) {
+  const [min, max] = SETTING_LIMITS[key];
+  Object.assign($(sel), { min, max });
+}
+
 async function openSettings() {
   const s = data.settings;
   $('#setWork').value = s.workMin;
@@ -1055,16 +1061,18 @@ function populateSoundSelect(select, selectedName) {
 // 開いていた画面の項目だけを差分として送る。全体を送り返すと、その間に他所で
 // 変わった設定まで古い値で巻き戻してしまう。
 async function saveSettings() {
-  const num = (sel, min, max, fallback) => {
+  // 範囲はスキーマの許容範囲(SETTING_LIMITS)に丸め、読めない入力は今の値のまま
+  const num = (sel, key, fallback) => {
+    const [min, max] = SETTING_LIMITS[key];
     const v = parseInt($(sel).value, 10);
     return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
   };
   const s = data.settings;
   const patch = {
-    workMin: num('#setWork', 1, 120, s.workMin),
-    shortMin: num('#setShort', 1, 60, s.shortMin),
-    longMin: num('#setLong', 1, 90, s.longMin),
-    longEvery: num('#setEvery', 1, 12, s.longEvery),
+    workMin: num('#setWork', 'workMin', s.workMin),
+    shortMin: num('#setShort', 'shortMin', s.shortMin),
+    longMin: num('#setLong', 'longMin', s.longMin),
+    longEvery: num('#setEvery', 'longEvery', s.longEvery),
     autoStartBreak: $('#setAutoBreak').checked,
     autoStartWork: $('#setAutoWork').checked,
     whiteNoise: {
@@ -1639,4 +1647,6 @@ window.addEventListener('beforeunload', () => {
   if (timer.current) recordSession(false, true);
 });
 
-init();
+// 初期化が済んだ印(スモークテストはこれを待ってから操作する)。失敗しても付けて、
+// テストがタイムアウトではなく収集したページエラーで落ちるようにする。
+init().finally(() => { document.documentElement.dataset.ready = 'true'; });

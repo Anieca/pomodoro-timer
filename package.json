@@ -25,6 +25,7 @@
     "afterPack": "scripts/after-pack.js",
     "files": [
       "main.js",
+      "main/**/*",
       "preload.js",
       "shared/**/*",
       "renderer/**/*",

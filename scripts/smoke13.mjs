@@ -1,5 +1,5 @@
 import { _electron as electron } from 'playwright-core';
-import { ELECTRON, isAppError } from './test-env.mjs';
+import { ELECTRON, isAppError, waitForApp } from './test-env.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -40,7 +40,7 @@ page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
 page.on('pageerror', e => errors.push(String(e)));
 await page.waitForSelector('#startBtn', { timeout: 15000 });
 // app.js の評価とイベント配線が終わるまで待つ(#startBtn は静的 HTML で先に出る)
-await page.waitForFunction(() => typeof openTimeline === 'function', { timeout: 15000 });
+await waitForApp(page);
 
 const click = sel => page.evaluate(s => document.querySelector(s).click(), sel);
 

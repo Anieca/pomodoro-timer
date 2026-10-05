@@ -1,4 +1,5 @@
 import { _electron as electron } from 'playwright-core';
+import { ELECTRON, isAppError } from './test-env.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -13,7 +14,6 @@ import * as os from 'node:os';
 //  N) タスクの completedAt: 0(epoch) → 有効な日付として扱い、未完了に化かさない
 //  J) タスクの不正な createdAt → CSV 書き出しが "NaN-NaN-NaN" にならない
 const APP_DIR = path.resolve(import.meta.dirname, '..');
-const EXE = path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
 const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 
@@ -22,12 +22,12 @@ const dataFile = ud => path.join(ud, 'pomodoro-data.json');
 
 async function launch(userData) {
   const app = await electron.launch({
-    executablePath: EXE, args: ['--no-sandbox', APP_DIR],
+    executablePath: ELECTRON, args: ['--no-sandbox', APP_DIR],
     env: { ...process.env, POMODORO_USER_DATA: userData }, timeout: 30000
   });
   const page = await app.firstWindow();
   const errors = [];
-  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
   page.on('pageerror', e => errors.push(String(e)));
   await page.waitForSelector('#startBtn', { timeout: 15000 });
   // init() が最後まで到達したことの確認を兼ねる(途中で throw すると定義されない)

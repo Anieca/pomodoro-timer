@@ -38,7 +38,13 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment'
+          # プラグインは「Claude がすでにコメント済み」なら止まるため、そのままだと
+          # push 後の再レビューが走らない。判定を head SHA 単位に変える。
+          prompt: |
+            /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment
+
+            Override for step 1: treat "Claude has already commented on this PR" as true only if a previous Claude comment references head commit ${{ github.event.pull_request.head.sha }}. Comments about older commits do not stop the review.
+            Every summary or inline comment you post must include the line "Reviewed commit: ${{ github.event.pull_request.head.sha }}".
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 

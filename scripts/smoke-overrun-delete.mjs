@@ -1,27 +1,9 @@
-import { _electron as electron } from 'playwright-core';
-import { ELECTRON, isAppError, waitForApp } from './test-env.mjs';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
+import { launchApp, assert } from './test-env.mjs';
 
 // レビュー指摘の修正検証:
 //  P1) スリープ/スロットリングでタイマーが超過しても実時間(durationSec)が膨らまない
 //  P2) 実行中に選択タスクを削除しても、記録に削除済みIDが残らない
-const APP_DIR = path.resolve(import.meta.dirname, '..');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
-
-const app = await electron.launch({
-  executablePath: ELECTRON,
-  args: ['--no-sandbox', APP_DIR],
-  env: { ...process.env, POMODORO_USER_DATA: userData },
-  timeout: 30000
-});
-const page = await app.firstWindow();
-const errors = [];
-page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
-page.on('pageerror', e => errors.push(String(e)));
-await page.waitForSelector('#startBtn', { timeout: 15000 });
-await waitForApp(page);
+const { page, errors, close } = await launchApp();
 
 // ===== P1: 25分タイマー開始直後に3時間スリープ→復帰したと仮定して完了させる =====
 await page.evaluate(() => {
@@ -69,7 +51,6 @@ console.log('P1 work durationSec:', work1 && work1.durationSec, '/ interval len(
 console.log('P2 segTaskId:', seg.segTaskId, '/ segIds:', JSON.stringify(seg.segIds), '/ taskGone:', seg.taskGone);
 console.log('errors:', errors.length ? errors : 'none');
 
-const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 assert(!!work1, 'P1: work session recorded');
 assert(work1 && Math.abs(work1.durationSec - 1500) < 60, `P1: durationSec clamped to ~25min (got ${work1 && work1.durationSec})`);
 assert(Math.abs(ivLenMin - 25) < 1, 'P1: interval end clipped to scheduled end (~25min)');
@@ -78,6 +59,5 @@ assert(seg.segTaskId === null, 'P2: ongoing segment task cleared after delete');
 assert(!seg.segIds.includes(delId), 'P2: the saved record does not retain the deleted task id');
 assert(errors.length === 0, 'no console/page errors');
 
-await app.close();
-fs.rmSync(userData, { recursive: true, force: true });
+await close();
 console.log(process.exitCode ? 'DONE (with failures)' : 'OK');

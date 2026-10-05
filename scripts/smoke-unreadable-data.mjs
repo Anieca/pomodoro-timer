@@ -1,41 +1,31 @@
-import { _electron as electron } from 'playwright-core';
-import { ELECTRON } from './test-env.mjs';
+import { launchApp, assert, tempUserData, dataFile } from './test-env.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
 
 // 「原本を読めないまま起動 → 保存で原本を上書き」経路が main 側で閉じているかの検証:
 //  D) 読めない原本 → 保存時に .unreadable- へ退避してから書き込む(原本のバイト列は保全)
 //  E) 退避そのものができない(rename が権限で失敗) → 保存を中止し、原本は無傷のまま
 //  F) 置き換えデータを書けない → 原本を退避も削除もしない(正本を消してから失敗しない)
 //  G) 最初の保存が終了時の同期保存だった場合 → 退避先をネイティブダイアログで知らせる
-const APP_DIR = path.resolve(import.meta.dirname, '..');
 
-const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
-
+// 権限を変えて後片付けまで自分で見るので、userData は呼び出し側が持つ。
 async function launch(userData) {
-  const app = await electron.launch({
-    executablePath: ELECTRON, args: ['--no-sandbox', APP_DIR],
-    env: { ...process.env, POMODORO_USER_DATA: userData }, timeout: 30000
+  const { app, page } = await launchApp({
+    userData,
+    // ネイティブモーダルは応答者がおらずテストを固めるため、記録用に差し替える。
+    beforeWindow: app => app.evaluate(({ dialog }) => {
+      globalThis.__dialogs = [];
+      dialog.showMessageBoxSync = opts => { globalThis.__dialogs.push(opts); return 0; };
+      dialog.showErrorBox = (title, content) => { globalThis.__dialogs.push({ title, detail: content }); };
+    })
   });
-  // ネイティブモーダルは応答者がおらずテストを固めるため、記録用に差し替える。
-  await app.evaluate(({ dialog }) => {
-    globalThis.__dialogs = [];
-    dialog.showMessageBoxSync = opts => { globalThis.__dialogs.push(opts); return 0; };
-    dialog.showErrorBox = (title, content) => { globalThis.__dialogs.push({ title, detail: content }); };
-  });
-  const page = await app.firstWindow();
-  await page.waitForSelector('#startBtn', { timeout: 15000 });
   // どのケースも原本を読めない状態で起動するので、init の最後に読み込み失敗の警告が出る。
-  // 出る前に操作すると、遅いマシン(CI)では保存の結果トーストのあとに警告が届いて
-  // 上書きし、待っているトーストが見えなくなる。警告が出るまで待ってから返す
-  // (出ないまま時間切れになったら、そのときの中身を返して D のアサートで落とす)。
-  const warn = await waitToast(page, /読み込めませんでした/).catch(() => toastText(page));
+  // launchApp は init の完了まで待つので、ここで読めば保存の結果トーストに上書きされる前の警告が取れる。
+  const warn = await toastText(page);
   return { app, page, warn };
 }
 
-const mkdir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
-const dataFile = ud => path.join(ud, 'pomodoro-data.json');
+const mkdir = tempUserData;
 const preserved = ud => fs.readdirSync(ud).filter(f => f.startsWith('pomodoro-data.json.unreadable-'));
 // 退避ファイルは原本の mode(000)を引き継ぐため、読む前に権限を戻す。
 const readForced = f => { fs.chmodSync(f, 0o600); return fs.readFileSync(f, 'utf8'); };
@@ -167,4 +157,4 @@ if (typeof process.getuid === 'function' && process.getuid() === 0) {
   fs.rmSync(ud, { recursive: true, force: true });
 }
 
-console.log(process.exitCode ? '\nsmoke21: FAILED' : '\nsmoke21: OK');
+console.log(process.exitCode ? '\nFAILED' : '\nOK');

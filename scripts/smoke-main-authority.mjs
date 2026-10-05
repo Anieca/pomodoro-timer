@@ -1,8 +1,6 @@
-import { _electron as electron } from 'playwright-core';
-import { ELECTRON, isAppError, waitForApp } from './test-env.mjs';
+import { launchApp, assert, tempUserData, dataFile } from './test-env.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
 
 // 保存データの権威が main にあることの検証。レンダラは正本を持たず、「何をしたいか」
 // (意図)だけを送り、返ってきた正本を表示する:
@@ -22,29 +20,14 @@ import * as os from 'node:os';
 //  AA) 取り消しのボタンは、あとから来た保存失敗の通知で消えない
 // 正規化の規則そのもの(どう丸め、どう復元するか)は schema-test.mjs で見る。
 // ここで見るのは「main がその正規化を通している」ことと「描画が壊れない」ことだけ。
-const APP_DIR = path.resolve(import.meta.dirname, '..');
 
-const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
-
-const mkdir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
-const dataFile = ud => path.join(ud, 'pomodoro-data.json');
+const mkdir = tempUserData;
 const readData = ud => JSON.parse(fs.readFileSync(dataFile(ud), 'utf8'));
 const task = (id, title) => ({ id, title, completed: false, createdAt: new Date().toISOString(), completedAt: null });
 
-async function launch(userData) {
-  const app = await electron.launch({
-    executablePath: ELECTRON, args: ['--no-sandbox', APP_DIR],
-    env: { ...process.env, POMODORO_USER_DATA: userData }, timeout: 30000
-  });
-  const page = await app.firstWindow();
-  const errors = [];
-  page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
-  page.on('pageerror', e => errors.push(String(e)));
-  await page.waitForSelector('#startBtn', { timeout: 15000 });
-  await waitForApp(page);
-  await page.waitForTimeout(300);
-  return { app, page, errors };
-}
+// 各ケースは起動前に userData へファイルを仕込み、終わったら自分で消す。
+// launchApp は init() の完了まで待つ。壊れたデータで init が途中で投げれば errors に入って落ちる。
+const launch = userData => launchApp({ userData });
 
 const stubSaveDialog = (app, filePath) => app.evaluate(({ dialog }, fp) => {
   dialog.showSaveDialog = async () => ({ canceled: false, filePath: fp });
@@ -522,4 +505,4 @@ for (const kind of ['record', 'focus']) {
   fs.rmSync(ud, { recursive: true, force: true });
 }
 
-console.log(process.exitCode ? '\nsmoke23: FAILED' : '\nsmoke23: OK');
+console.log(process.exitCode ? '\nFAILED' : '\nOK');

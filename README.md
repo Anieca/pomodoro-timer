@@ -28,9 +28,17 @@ npm start
 | スクリプト | 内容 |
 | --- | --- |
 | `npm start` | アプリを起動（`electron .`） |
-| `npm test` | Playwright スモークテスト一式を実行(ディスプレイの無い Linux では `xvfb-run -a npm test`) |
+| `npm test` | 単体テストと Playwright スモークテスト一式を実行(ディスプレイの無い Linux では `xvfb-run -a npm test`) |
+| `node scripts/smoke-<名前>.mjs` | 個別のスモークテストを実行(例: `node scripts/smoke-timeline.mjs`) |
+| `node scripts/shots.mjs [出力先]` | 主な画面のスクリーンショットを撮る(テストではない。既定の出力先は OS の一時ディレクトリの `pomodoro-shots/`) |
 | `node scripts/generate-noise.mjs` | ホワイト/ピンク/ブラウンノイズ音源を生成 |
-| `node scripts/smoke.mjs` | 個別のスモークテストを実行 |
+
+テストは `scripts/` にあります。
+
+- 単体テスト(Electron を起動しない): `schema-test.mjs`(検証と正規化)/ `actions-test.mjs`(意図の適用)/ `stats-test.mjs`(統計の集計)
+- スモークテスト(Electron を起動する): `smoke-tasks`(タスク操作の基本)/ `smoke-sessions`(記録・休憩・一時停止区間)/ `smoke-overrun-delete`(超過時の実時間・実行中のタスク削除)/ `smoke-sleep`(スリープを実働から除く)/ `smoke-timeline`・`smoke-timeline-midnight`(タイムテーブルと日付またぎ)/ `smoke-stats`(統計ビュー)/ `smoke-noise-*`(ホワイトノイズの切替・後方互換・読み込み失敗)/ `smoke-corrupt-data`・`smoke-unreadable-data`(壊れた・読めない保存データ)/ `smoke-main-authority`(保存データの正本を main が持つこと)
+
+スモークテストは `scripts/test-env.mjs` の `launchApp({ seed })` で起動します。一時的な userData を作り(`seed` を渡すとそれを保存データとして置く)、`init()` の完了(`html[data-ready="true"]`)まで待ち、コンソールエラーを `errors` に集めます。新しく足したテストは `scripts/run-tests.mjs` の `TESTS` に加えてください。
 
 ## 配布ビルド
 

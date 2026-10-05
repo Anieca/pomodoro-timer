@@ -9,20 +9,22 @@ const TESTS = [
   'schema-test.mjs',
   'actions-test.mjs',
   'stats-test.mjs',
-  'smoke.mjs',
-  'smoke11.mjs',
-  'smoke13.mjs',
-  'smoke14.mjs',
-  'smoke16.mjs',
-  'smoke17.mjs',
-  'smoke18.mjs',
-  'smoke19.mjs',
-  'smoke20.mjs',
-  'smoke21.mjs',
-  'smoke23.mjs',
-  'smoke24.mjs',
-  'smoke25.mjs'
+  // 以降は Electron を起動する E2E(起動は test-env.mjs の launchApp に揃える)
+  'smoke-tasks.mjs',
+  'smoke-sessions.mjs',
+  'smoke-overrun-delete.mjs',
+  'smoke-sleep.mjs',
+  'smoke-timeline.mjs',
+  'smoke-timeline-midnight.mjs',
+  'smoke-stats.mjs',
+  'smoke-noise-break.mjs',
+  'smoke-noise-compat.mjs',
+  'smoke-noise-load-failure.mjs',
+  'smoke-corrupt-data.mjs',
+  'smoke-unreadable-data.mjs',
+  'smoke-main-authority.mjs'
 ];
+// scripts/shots.mjs はスクリーンショット撮影用で、テストではないのでここには入れない。
 
 const run = file => new Promise(resolve => {
   const child = spawn(process.execPath, [path.join(DIR, file)], { stdio: 'inherit' });

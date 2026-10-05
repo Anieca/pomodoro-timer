@@ -1,32 +1,13 @@
-import { _electron as electron } from 'playwright-core';
-import { ELECTRON, isAppError, waitForApp } from './test-env.mjs';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
+import { launchApp, assert } from './test-env.mjs';
 
 // 休憩ノイズの後方互換(既存データに breakFile 無し)と、休憩音源が空のケース
-const APP_DIR = path.resolve(import.meta.dirname, '..');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
 
 // breakFile を持たない旧 whiteNoise 設定を仕込む
-fs.writeFileSync(path.join(userData, 'pomodoro-data.json'), JSON.stringify({
+const { page, errors, close } = await launchApp({ seed: {
   tasks: [], sessions: [], selectedTaskId: null,
   settings: { workMin: 25, shortMin: 5, longMin: 15, longEvery: 4,
     whiteNoise: { enabled: true, file: 'white-noise.wav', volume: 50 } }
-}));
-
-const app = await electron.launch({
-  executablePath: ELECTRON,
-  args: ['--no-sandbox', APP_DIR],
-  env: { ...process.env, POMODORO_USER_DATA: userData },
-  timeout: 30000
-});
-const page = await app.firstWindow();
-const errors = [];
-page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
-page.on('pageerror', e => errors.push(String(e)));
-await page.waitForSelector('#startBtn', { timeout: 15000 });
-await waitForApp(page);
+} });
 
 const click = sel => page.evaluate(s => document.querySelector(s).click(), sel);
 const indicatorVisible = () => page.evaluate(() => !document.querySelector('#noiseIndicator').hidden);
@@ -62,7 +43,6 @@ console.log('work active:', workActive, '/ mode after work:', modeAfterWork);
 console.log('break active:', breakActive, '/ playing:', breakSrc);
 console.log('errors:', errors.length ? errors : 'none');
 
-const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 assert(compat.breakFile === 'white-noise.wav', 'missing breakFile filled by default merge (backward compat)');
 assert(compat.shortFile === 'white-noise.wav', 'noiseFileFor(break) returns default when not customized');
 assert(workActive, 'focus noise active');
@@ -71,6 +51,5 @@ assert(!breakActive, 'empty break sound → no noise during break (indicator hid
 assert(!breakSrc, 'nothing playing when break sound is empty');
 assert(errors.length === 0, 'no console/page errors');
 
-await app.close();
-fs.rmSync(userData, { recursive: true, force: true });
+await close();
 console.log(process.exitCode ? 'DONE (with failures)' : 'OK');

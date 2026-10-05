@@ -1,26 +1,7 @@
-import { _electron as electron } from 'playwright-core';
-import { ELECTRON, isAppError, waitForApp } from './test-env.mjs';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
+import { launchApp, assert } from './test-env.mjs';
 
 // sessions / 休憩記録 / 一時停止区間(intervals)の検証
-const APP_DIR = path.resolve(import.meta.dirname, '..');
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
-
-const app = await electron.launch({
-  executablePath: ELECTRON,
-  args: ['--no-sandbox', APP_DIR],
-  env: { ...process.env, POMODORO_USER_DATA: userData },
-  timeout: 30000
-});
-const page = await app.firstWindow();
-await page.waitForSelector('#startBtn', { timeout: 15000 });
-// app.js の評価完了を待つ(#startBtn は静的 HTML で先に出るため固定待ちはレースになる)
-await waitForApp(page);
-
-const errors = [];
-page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
+const { page, errors, close } = await launchApp();
 
 const click = sel => page.evaluate(s => document.querySelector(s).click(), sel);
 const dumpSessions = () => page.evaluate(() => data.sessions.map(s => ({
@@ -45,7 +26,6 @@ await page.waitForTimeout(3000);    // 完走待ち
 const afterWork = await dumpSessions();
 
 // --- 2) 休憩(short)を完走 → 休憩も記録される ---
-await page.evaluate(() => { if (timer.mode !== 'work') {} });
 const modeAfterWork = await page.evaluate(() => timer.mode);
 await click('#startBtn');           // 休憩開始
 await page.waitForTimeout(4500);    // 休憩完走待ち
@@ -87,7 +67,6 @@ console.log('today stat (work only):', JSON.stringify(todayStat));
 console.log('history text:', JSON.stringify(historyText));
 
 // アサーション
-const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 const work = afterWork.find(s => s.mode === 'work');
 assert(work && work.completed, 'work session recorded & completed');
 assert(work && work.intervals === 2, 'work has 2 intervals (pause split)');
@@ -101,6 +80,5 @@ assert(todayStat.count === '1', 'today count = 1 completed work (break excluded)
 assert(/休憩/.test(historyText), 'history shows break');
 assert(errors.length === 0, 'no console errors');
 
-await app.close();
-fs.rmSync(userData, { recursive: true, force: true });
+await close();
 console.log(process.exitCode ? 'DONE (with failures)' : 'OK');

@@ -1,8 +1,4 @@
-import { _electron as electron } from 'playwright-core';
-import { ELECTRON, isAppError, waitForApp } from './test-env.mjs';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
+import { launchApp, assert } from './test-env.mjs';
 
 // 統計ビューの配線の検証(集計の決まりそのものは stats-test.mjs で見る)。
 //  A) 記録を入れて開くと、期間の集計が KPI・日別・時間帯・タスク別に出る
@@ -11,10 +7,6 @@ import * as os from 'node:os';
 //     main の匿名化に従い「タスクなし」へ寄る)
 //  D) 記録が無ければ空の案内を出し、例外を出さない
 //  E) 内訳を持たない旧データの時間がサイドバーのタスクごとの集計にも出る
-const APP_DIR = path.resolve(import.meta.dirname, '..');
-
-const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
-
 const now = new Date();
 const at = (dd, h, m = 0) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + dd, h, m).toISOString();
 const work = (id, dd, h, taskId, completed = true) => ({
@@ -23,22 +15,6 @@ const work = (id, dd, h, taskId, completed = true) => ({
   taskIds: completed ? [taskId] : [], taskTimes: [{ taskId, durationSec: 25 * 60 }],
   intervals: [{ startedAt: at(dd, h), endedAt: at(dd, h, 25) }]
 });
-
-async function launch(seed) {
-  const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
-  if (seed) fs.writeFileSync(path.join(ud, 'pomodoro-data.json'), JSON.stringify(seed));
-  const app = await electron.launch({
-    executablePath: ELECTRON, args: ['--no-sandbox', APP_DIR],
-    env: { ...process.env, POMODORO_USER_DATA: ud }, timeout: 30000
-  });
-  const page = await app.firstWindow();
-  const errors = [];
-  page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
-  page.on('pageerror', e => errors.push(String(e)));
-  await page.waitForSelector('#startBtn', { timeout: 15000 });
-  await waitForApp(page);
-  return { app, page, errors };
-}
 
 const read = page => page.evaluate(() => ({
   period: document.querySelector('#statsPeriod').textContent,
@@ -53,7 +29,7 @@ const read = page => page.evaluate(() => ({
 
 /* ===== A〜C ===== */
 {
-  const { app, page, errors } = await launch({
+  const { page, errors, close } = await launchApp({ seed: {
     tasks: [
       { id: 't1', title: '資料づくり', completed: false, createdAt: at(-20, 9) },
       { id: 't2', title: 'レビュー', completed: false, createdAt: at(-20, 9) }
@@ -64,7 +40,7 @@ const read = page => page.evaluate(() => ({
       work('c', -1, 14, 't2'),
       work('d', -20, 14, 't2')            // 7日には入らず 30日には入る
     ]
-  });
+  } });
 
   await page.click('#statsBtn');
   await page.waitForSelector('#statsModal:not([hidden])');
@@ -94,12 +70,12 @@ const read = page => page.evaluate(() => ({
   await page.keyboard.press('Escape');
   assert(await page.isHidden('#statsModal'), 'Esc で閉じる');
   assert(errors.length === 0, `コンソールエラーなし ${JSON.stringify(errors)}`);
-  await app.close();
+  await close();
 }
 
 /* ===== E: 内訳を持たない旧データもサイドバーのタスクごとの集計に出る ===== */
 {
-  const { app, page, errors } = await launch({
+  const { page, errors, close } = await launchApp({ seed: {
     tasks: [
       { id: 't1', title: '資料づくり', completed: false, createdAt: at(-20, 9) },
       { id: 't2', title: 'レビュー', completed: false, createdAt: at(-20, 9) }
@@ -110,19 +86,19 @@ const read = page => page.evaluate(() => ({
       { id: 'l2', mode: 'work', completed: true, taskIds: ['t1'], durationSec: 25 * 60, startedAt: at(-1, 10), endedAt: at(-1, 10, 25) },
       { id: 'l3', mode: 'work', completed: true, taskIds: ['t1', 't2'], durationSec: 25 * 60, startedAt: at(-1, 11), endedAt: at(-1, 11, 25) }
     ]
-  });
+  } });
   const meta = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.task-item')]
     .map(li => [li.querySelector('.task-title').textContent, li.querySelector('.task-meta').textContent])));
   console.log('E:', JSON.stringify(meta));
   assert(meta['資料づくり'] === '🍅3 · 50分', 'E: 旧データの時間もタスクに積む(完了数は従来どおり taskIds で数える)');
   assert(meta['レビュー'] === '🍅1 · 0分', 'E: タスクが決まらない旧データの時間はどのタスクにも積まない(統計と揃える)');
   assert(errors.length === 0, `E: コンソールエラーなし ${JSON.stringify(errors)}`);
-  await app.close();
+  await close();
 }
 
 /* ===== D: 記録なし ===== */
 {
-  const { app, page, errors } = await launch(null);
+  const { page, errors, close } = await launchApp();
   await page.click('#statsBtn');
   await page.waitForSelector('#statsModal:not([hidden])');
   const d = await read(page);
@@ -132,5 +108,5 @@ const read = page => page.evaluate(() => ({
   await page.click('#statsClose');
   assert(await page.isHidden('#statsModal'), 'D: 閉じるボタンで閉じる');
   assert(errors.length === 0, `D: コンソールエラーなし ${JSON.stringify(errors)}`);
-  await app.close();
+  await close();
 }

@@ -7,6 +7,7 @@ const DIR = import.meta.dirname;
 const TESTS = [
   // Electron を起動しない単体テストを先に走らせる(壊れていれば数百 ms で分かる)
   'schema-test.mjs',
+  'actions-test.mjs',
   'smoke.mjs',
   'smoke11.mjs',
   'smoke13.mjs',

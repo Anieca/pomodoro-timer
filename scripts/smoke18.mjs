@@ -24,10 +24,12 @@ await page.waitForFunction(() => typeof startNoise === 'function' && Array.isArr
 const click = sel => page.evaluate(s => document.querySelector(s).click(), sel);
 const playing = () => page.evaluate(() => noisePlayingName);
 
-await page.evaluate(() => {
-  data.settings.workMin = 0.05;
-  data.settings.shortMin = 0.05;
-  data.settings.whiteNoise = { enabled: true, file: 'white-noise.wav', breakFile: 'brown-noise.wav', volume: 50 };
+// テスト用に短いフォーカス/休憩へ。設定は 1 分未満にできない(正規化で丸まる)ので、
+// モード長を求める関数だけを差し替える。data を直接書き換えても、次の意図の応答で
+// 正本のスナップショットに戻されるため効かない。
+await page.evaluate(async () => {
+  modeDurationMs = () => 3000;
+  await mutate({ type: 'settings/update', patch: { whiteNoise: { enabled: true, file: 'white-noise.wav', breakFile: 'brown-noise.wav', volume: 50 } } });
 });
 
 // フォーカス開始 → 実際に white を再生(バッファをキャッシュ)

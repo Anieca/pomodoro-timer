@@ -173,7 +173,8 @@ function normalizeData(raw) {
   };
 }
 
-module.exports = {
+// レンダラ(<script>)では関数がそのまま global に出る。
+if (typeof module !== 'undefined') module.exports = {
   DEFAULT_SETTINGS,
   normalizeData,
   normalizeSession,

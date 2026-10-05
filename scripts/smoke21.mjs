@@ -26,8 +26,12 @@ async function launch(userData) {
   });
   const page = await app.firstWindow();
   await page.waitForSelector('#startBtn', { timeout: 15000 });
-  await page.waitForTimeout(300); // init の consumeLoadWarning / render 完了待ち
-  return { app, page };
+  // どのケースも原本を読めない状態で起動するので、init の最後に読み込み失敗の警告が出る。
+  // 出る前に操作すると、遅いマシン(CI)では保存の結果トーストのあとに警告が届いて
+  // 上書きし、待っているトーストが見えなくなる。警告が出るまで待ってから返す
+  // (出ないまま時間切れになったら、そのときの中身を返して D のアサートで落とす)。
+  const warn = await waitToast(page, /読み込めませんでした/).catch(() => toastText(page));
+  return { app, page, warn };
 }
 
 const mkdir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
@@ -72,11 +76,8 @@ if (typeof process.getuid === 'function' && process.getuid() === 0) {
   fs.writeFileSync(dataFile(ud), ORIGINAL);
   fs.chmodSync(dataFile(ud), 0o000);
 
-  const { app, page } = await launch(ud);
+  const { app, page, warn } = await launch(ud);
   const before = await page.evaluate(() => document.querySelectorAll('#taskList .task-item').length);
-  // 起動時の警告は init の IPC 往復のあとに出る。固定待ちでは遅いマシンで取りこぼすため、
-  // 出るまで待つ(出ないまま時間切れになったら、そのときの中身でアサートを落とす)。
-  const warn = await waitToast(page, /読み込めませんでした/).catch(() => toastText(page));
   assert(before === 0, 'D: 読めない原本では空起動');
   assert(!warn.hidden && /読み込めませんでした/.test(warn.text), 'D: 読み込み失敗を起動時に警告');
   assert(preserved(ud).length === 0, 'D: 読み込み時点では退避しない(保存要求まで保留)');
@@ -153,7 +154,7 @@ if (typeof process.getuid === 'function' && process.getuid() === 0) {
   const { app, page } = await launch(ud);
   // 非同期保存を一度も経ずに終了した状況(beforeunload の同期保存が最初の保存)。
   const res = await page.evaluate(() =>
-    window.api.saveDataSync({ tasks: [], sessions: [], selectedTaskId: null, settings: {} }));
+    window.api.mutateSync({ type: 'task/select', id: null }));
   const bk = preserved(ud);
   const shown = await dialogs(app);
   console.log('G: res=', JSON.stringify(res), 'dialogs=', JSON.stringify(shown));

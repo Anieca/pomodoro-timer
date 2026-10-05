@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, pow
 const path = require('path');
 const fs = require('fs');
 const { normalizeData, DEFAULT_SETTINGS } = require('./shared/schema');
+const { applyAction, deletionUndo } = require('./shared/actions');
 
 if (process.env.POMODORO_USER_DATA) app.setPath('userData', process.env.POMODORO_USER_DATA);
 
@@ -356,11 +357,9 @@ let store = normalizeData(null);
 
 // 正本を差し替えて、書き込み元以外の全ウィンドウへ配る。引数は正規化済みであること。
 //
-// 書き込み元へ送り返さないのは、丸ごと置換の保存 API では取りこぼしが起きるため。
-// 保存1の応答が届くまでに編集2が入っていると、返ってきた古いスナップショットで
-// 上書きされて編集2が画面から消え、その状態で次の保存が走れば本当に失われる。
-// 書き込み元は自分が送った内容を既に持っているので、送り返す必要もない。
-// (main 自身が書き手になる段階では、丸ごと置換をやめて intent 化する必要がある)
+// 書き込み元を外すのは二重配信を避けるためだけ。意図(data:mutate)の応答として
+// 同じスナップショットが戻り値で届くので、そちらが書き込み元の反映経路になる。
+// 丸ごと置換だった頃と違い、書き込み元も必ず正規化後の正本を受け取る。
 function publish(normalized, exceptWc) {
   store = normalized;
   for (const win of BrowserWindow.getAllWindows()) {
@@ -417,6 +416,10 @@ ipcMain.handle('data:load', e => {
 // 返すのは定数の既定値だけで、渡す情報は無い。
 ipcMain.on('data:defaults', e => { e.returnValue = DEFAULT_SETTINGS; });
 
+// 終了直前に正本を同期で読む(beforeunload 用)。main は意図を受け取った順に処理する
+// ので、ここで返す正本にはレンダラが送った意図がすべて反映されている。
+ipcMain.on('data:snapshot-sync', e => { e.returnValue = isTrusted(e) ? store : null; });
+
 // 読み込み時警告を一度だけ回収する(レンダラがトースト表示に使う)。
 ipcMain.handle('data:consume-warning', e => {
   if (!isTrusted(e)) return null;
@@ -452,7 +455,7 @@ function gateWrite() {
     backup = null;              // 既に消えている場合は保全すべき原本がない
   }
   unreadableOriginal = null;    // 以降は通常の保存に戻る
-  if (backup) console.warn('[data:save] 読めなかった原本を退避しました:', backup);
+  if (backup) console.warn('[data:mutate] 読めなかった原本を退避しました:', backup);
   return backup;
 }
 
@@ -481,23 +484,78 @@ function writeData(raw, senderWc) {
   return preserved;
 }
 
-ipcMain.handle('data:save', (e, data) => {
+// 意図を正本に適用して保存する。書き手はここだけ。
+// 未知の意図は保存を通さない(黙って素通りさせると、届いていないのにレンダラは
+// 適用されたつもりで先へ進み、次の起動で消えている)。
+// 削除の取り消し用の控え(id → deletionUndo)。削除を適用する直前の正本から作り、
+// 書き込めたら持つ。レンダラは取り消しを「この削除を取り消す」(task/undelete)として
+// 送るだけでよく、削除の応答を待たずに送れる。main は意図を受け取った順に適用する
+// ので取り消しは必ず削除のあとに当たり、応答前にレンダラが閉じても失われない。
+const deletions = new Map();
+
+function commit(action, senderWc) {
+  if (action && action.type === 'task/undelete') {
+    const u = deletions.get(action.id);
+    // 削除が通っていない(失敗した、取り消し済み)なら戻すものは無い。何も書かない。
+    if (!u) return null;
+    const preserved = writeData(applyAction(store, {
+      type: 'task/restore',
+      task: u.task,
+      index: u.index,
+      // 削除のあと取り消すまでに届いた記録の位置も含む(strippedForUndo が足す)。
+      patches: u.patches,
+      select: u.selected && !u.task.completed
+    }), senderWc);
+    deletions.delete(action.id);
+    return preserved;
+  }
+  const undo = action && action.type === 'task/delete' ? deletionUndo(store, action.id) : null;
+  const stripped = action && action.type === 'session/add' ? strippedForUndo(action.session) : [];
+  const next = applyAction(store, action);
+  if (!next) throw new Error('未知の操作です: ' + String((action && action.type) || action));
+  const preserved = writeData(next, senderWc);
+  if (undo) deletions.set(action.id, undo);
+  for (const { id, patch } of stripped) deletions.get(id).patches.push(patch);
+  return preserved;
+}
+
+// 取り消せる削除のタスクを指す記録が届くと、session/add はその内訳を外す(位置は
+// 残る)。削除のあとに終わったセッションは削除時の控えに入っていないので、外す位置を
+// 控えに足しておき、取り消しで一緒に付け直す。
+function strippedForUndo(session) {
+  const s = session && typeof session === 'object' ? session : {};
+  if (!Array.isArray(s.taskTimes) || store.sessions.some(x => x.id === s.id)) return [];
+  const out = [];
+  for (const id of deletions.keys()) {
+    if (store.tasks.some(t => t.id === id)) continue;
+    const indexes = [];
+    s.taskTimes.forEach((tt, i) => { if (tt && tt.taskId === id) indexes.push(i); });
+    if (indexes.length) out.push({ id, patch: { sessionId: s.id, indexes } });
+  }
+  return out;
+}
+
+// 応答には必ず正本を添える。成功なら適用結果、失敗なら適用前の内容が入るので、
+// レンダラはどちらでもそれを描けば画面と保存内容が食い違わない。
+ipcMain.handle('data:mutate', (e, action) => {
   if (!isTrusted(e)) return { ok: false, error: 'untrusted sender' };
   try {
-    const preserved = writeData(data, e.sender);
+    const preserved = commit(action, e.sender);
     // 原本を退避したことは黙らせない(レンダラがトーストで知らせる)。
-    return preserved ? { ok: true, preserved } : { ok: true };
+    return preserved ? { ok: true, snapshot: store, preserved } : { ok: true, snapshot: store };
   } catch (err) {
-    return { ok: false, error: String((err && err.message) || err) };
+    return { ok: false, error: String((err && err.message) || err), snapshot: store };
   }
 });
 
-// 終了直前の同期保存。sendSync でレンダラをブロックし、書き込み完了を保証する。
+// 終了直前の同期の意図。sendSync でレンダラをブロックし、書き込み完了を保証する。
+// 通常の保存は意図ごとに即ディスクへ乗るため、ここを通るのは終了時に実行中
+// セッションを打ち切って記録する一件だけ。
 // 失敗は握りつぶさず、ユーザーが気づけるようネイティブダイアログで通知する。
-ipcMain.on('data:save-sync', (e, data) => {
+ipcMain.on('data:mutate-sync', (e, action) => {
   if (!isTrusted(e)) { e.returnValue = { ok: false, error: 'untrusted sender' }; return; }
   try {
-    const preserved = writeData(data, e.sender);
+    const preserved = commit(action, e.sender);
     // 何も保存せずに終了/リロードした場合、原本を退避するのはこの同期保存が最初になる。
     // 呼び出し元(beforeunload)は戻り値を使えずトーストも出せないため、退避先を伝える
     // 手段がここしかない。黙って移すと次回起動は普通に空で開き、原本を追えなくなる。
@@ -511,11 +569,11 @@ ipcMain.on('data:save-sync', (e, data) => {
         });
       } catch {}
     }
-    e.returnValue = preserved ? { ok: true, preserved } : { ok: true };
+    e.returnValue = preserved ? { ok: true, snapshot: store, preserved } : { ok: true, snapshot: store };
   } catch (err) {
     const msg = String((err && err.message) || err);
     try { dialog.showErrorBox('保存に失敗しました', 'データを保存できませんでした:\n' + msg); } catch {}
-    e.returnValue = { ok: false, error: msg };
+    e.returnValue = { ok: false, error: msg, snapshot: store };
   }
 });
 

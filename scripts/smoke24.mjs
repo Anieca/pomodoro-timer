@@ -1,4 +1,5 @@
 import { _electron as electron } from 'playwright-core';
+import { ELECTRON, isAppError } from './test-env.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -23,19 +24,17 @@ import * as os from 'node:os';
 //  AC) 終了時の記録(beforeunload)でも睡眠を実働にしない
 //  AD) 通知を取り逃したまま tick より先に停止されても補正する
 const APP_DIR = path.resolve(import.meta.dirname, '..');
-// 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
-const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
 const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 
 const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'pomo-test-'));
 const app = await electron.launch({
-  executablePath: EXE, args: ['--no-sandbox', APP_DIR],
+  executablePath: ELECTRON, args: ['--no-sandbox', APP_DIR],
   env: { ...process.env, POMODORO_USER_DATA: ud }, timeout: 30000
 });
 const page = await app.firstWindow();
 const errors = [];
-page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+page.on('console', m => { if (isAppError(m)) errors.push(m.text()); });
 page.on('pageerror', e => errors.push(String(e)));
 await page.waitForSelector('#startBtn', { timeout: 15000 });
 await page.waitForFunction(() => typeof applySleep === 'function', { timeout: 15000 });

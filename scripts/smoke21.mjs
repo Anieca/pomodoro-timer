@@ -1,4 +1,5 @@
 import { _electron as electron } from 'playwright-core';
+import { ELECTRON } from './test-env.mjs';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -9,14 +10,12 @@ import * as os from 'node:os';
 //  F) 置き換えデータを書けない → 原本を退避も削除もしない(正本を消してから失敗しない)
 //  G) 最初の保存が終了時の同期保存だった場合 → 退避先をネイティブダイアログで知らせる
 const APP_DIR = path.resolve(import.meta.dirname, '..');
-// 既定は macOS 版のバイナリ。POMODORO_ELECTRON を渡せば他 OS の Electron でも走る。
-const EXE = process.env.POMODORO_ELECTRON || path.join(APP_DIR, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
 
 const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 
 async function launch(userData) {
   const app = await electron.launch({
-    executablePath: EXE, args: ['--no-sandbox', APP_DIR],
+    executablePath: ELECTRON, args: ['--no-sandbox', APP_DIR],
     env: { ...process.env, POMODORO_USER_DATA: userData }, timeout: 30000
   });
   // ネイティブモーダルは応答者がおらずテストを固めるため、記録用に差し替える。

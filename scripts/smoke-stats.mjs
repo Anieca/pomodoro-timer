@@ -6,6 +6,7 @@ import { launchApp, assert } from './test-env.mjs';
 //  C) 開いている間に正本が変わると描き直す(削除したタスクは「(削除済み)」ではなく
 //     main の匿名化に従い「タスクなし」へ寄る)
 //  D) 記録が無ければ空の案内を出し、例外を出さない
+//  E) 内訳を持たない旧データの時間がサイドバーのタスクごとの集計にも出る
 const now = new Date();
 const at = (dd, h, m = 0) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + dd, h, m).toISOString();
 const work = (id, dd, h, taskId, completed = true) => ({
@@ -69,6 +70,29 @@ const read = page => page.evaluate(() => ({
   await page.keyboard.press('Escape');
   assert(await page.isHidden('#statsModal'), 'Esc で閉じる');
   assert(errors.length === 0, `コンソールエラーなし ${JSON.stringify(errors)}`);
+  await close();
+}
+
+/* ===== E: 内訳を持たない旧データもサイドバーのタスクごとの集計に出る ===== */
+{
+  const { page, errors, close } = await launchApp({ seed: {
+    tasks: [
+      { id: 't1', title: '資料づくり', completed: false, createdAt: at(-20, 9) },
+      { id: 't2', title: 'レビュー', completed: false, createdAt: at(-20, 9) }
+    ],
+    // 旧 pomodoros 形式(taskTimes・区間を持たない)
+    pomodoros: [
+      { id: 'l1', mode: 'work', completed: true, taskIds: ['t1'], durationSec: 25 * 60, startedAt: at(-1, 9), endedAt: at(-1, 9, 25) },
+      { id: 'l2', mode: 'work', completed: true, taskIds: ['t1'], durationSec: 25 * 60, startedAt: at(-1, 10), endedAt: at(-1, 10, 25) },
+      { id: 'l3', mode: 'work', completed: true, taskIds: ['t1', 't2'], durationSec: 25 * 60, startedAt: at(-1, 11), endedAt: at(-1, 11, 25) }
+    ]
+  } });
+  const meta = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.task-item')]
+    .map(li => [li.querySelector('.task-title').textContent, li.querySelector('.task-meta').textContent])));
+  console.log('E:', JSON.stringify(meta));
+  assert(meta['資料づくり'] === '🍅3 · 50分', 'E: 旧データの時間もタスクに積む(完了数は従来どおり taskIds で数える)');
+  assert(meta['レビュー'] === '🍅1 · 0分', 'E: タスクが決まらない旧データの時間はどのタスクにも積まない(統計と揃える)');
+  assert(errors.length === 0, `E: コンソールエラーなし ${JSON.stringify(errors)}`);
   await close();
 }
 

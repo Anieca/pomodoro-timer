@@ -7,7 +7,7 @@
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { normalizeData } = require('../shared/schema.js');
-const { summarizeStats, currentStreak } = require('../shared/stats.js');
+const { summarizeStats, currentStreak, taskTimesOf } = require('../shared/stats.js');
 
 const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 const eq = (a, b, msg) => assert(JSON.stringify(a) === JSON.stringify(b), `${msg}${JSON.stringify(a) === JSON.stringify(b) ? '' : `\n  got: ${JSON.stringify(a)}\n  want: ${JSON.stringify(b)}`}`);
@@ -111,6 +111,20 @@ const sessions = list => normalizeData({ sessions: list }).sessions;
   const st = summarizeStats(s, { end: TODAY, days: 1 });
   eq(st.tasks, [{ taskId: null, sec: 2100 }, { taskId: 't1', sec: 1500 }],
     '旧データ: タスクが一つなら そこへ、決まらなければタスクなしへ積む(集中時間と食い違わない)');
+}
+
+/* ===== taskTimesOf(サイドバーのタスクごとの集計と共有) ===== */
+{
+  const [l1, l2, l3] = normalizeData({ pomodoros: [
+    { id: 'l1', mode: 'work', completed: true, taskIds: ['t1'], durationSec: 1500, startedAt: at(0, 9), endedAt: at(0, 9, 25) },
+    { id: 'l2', mode: 'work', completed: true, taskIds: ['t1', 't2'], durationSec: 1500, startedAt: at(0, 10), endedAt: at(0, 10, 25) },
+    { id: 'l3', mode: 'work', completed: true, durationSec: 600, startedAt: at(0, 11), endedAt: at(0, 11, 10) }
+  ] }).sessions;
+  eq(taskTimesOf(l1), [{ taskId: 't1', durationSec: 1500 }], 'taskTimesOf: 旧データでタスクが一つならそこへ丸ごと');
+  eq(taskTimesOf(l2), [{ taskId: null, durationSec: 1500 }], 'taskTimesOf: 旧データでタスクが決まらなければタスクなし');
+  eq(taskTimesOf(l3), [{ taskId: null, durationSec: 600 }], 'taskTimesOf: タスクを持たない旧データもタスクなし');
+  const [cur] = sessions([work('n', 0, 9, 0, 25, { taskTimes: [{ taskId: 't1', durationSec: 600 }, { taskId: 't2', durationSec: 900 }] })]);
+  eq(taskTimesOf(cur), [{ taskId: 't1', durationSec: 600 }, { taskId: 't2', durationSec: 900 }], 'taskTimesOf: 内訳があればそのまま使う');
 }
 
 /* ===== 連続日数 ===== */

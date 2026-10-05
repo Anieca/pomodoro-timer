@@ -184,8 +184,10 @@ function renderAll() {
 function taskStats(taskId) {
   let pomos = 0, sec = 0;
   for (const p of data.sessions) {
+    if (p.mode !== 'work') continue;
     if (p.completed && p.taskIds.includes(taskId)) pomos++;
-    for (const tt of p.taskTimes) if (tt.taskId === taskId) sec += tt.durationSec;
+    // 内訳を持たない旧データも統計のタスク別と同じ決まりで積む(stats.js)
+    for (const tt of taskTimesOf(p)) if (tt.taskId === taskId) sec += tt.durationSec;
   }
   // 進行中のポモドーロの時間もリアルタイムに反映
   if (timer.current && timer.current.mode === 'work') {

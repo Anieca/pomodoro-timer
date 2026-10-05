@@ -74,7 +74,13 @@ function summarizeStats(sessions, { end, days }) {
     focusSec += sec;
     row.focusSec += sec;
     if (s.completed) { pomos++; row.pomos++; }
-    for (const tt of Array.isArray(s.taskTimes) ? s.taskTimes : []) {
+    // 旧 pomodoros 形式から移ってきた記録は内訳(taskTimes)を持たない。落とすと
+    // 集中時間には出るのにタスク別が空になるので、タスクが一つに決まればそこへ、
+    // 決まらなければ「タスクなし」へ丸ごと積む。
+    const taskIds = Array.isArray(s.taskIds) ? s.taskIds : [];
+    const times = Array.isArray(s.taskTimes) && s.taskTimes.length ? s.taskTimes
+      : [{ taskId: taskIds.length === 1 ? taskIds[0] : null, durationSec: sec }];
+    for (const tt of times) {
       const id = tt.taskId ?? null;
       taskSec.set(id, (taskSec.get(id) || 0) + tt.durationSec);
     }

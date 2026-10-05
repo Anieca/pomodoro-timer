@@ -100,6 +100,19 @@ const sessions = list => normalizeData({ sessions: list }).sessions;
     'タスク別: 内訳を合算して多い順、タスクなし(null)も残し、0秒は落とす');
 }
 
+/* ===== 内訳を持たない旧データ ===== */
+{
+  // 旧 pomodoros 形式(taskIds と durationSec だけ)も正規化を通して取り込まれる
+  const s = normalizeData({ pomodoros: [
+    { id: 'l1', mode: 'work', completed: true, taskIds: ['t1'], durationSec: 1500, startedAt: at(0, 9), endedAt: at(0, 9, 25) },
+    { id: 'l2', mode: 'work', completed: true, taskIds: ['t1', 't2'], durationSec: 1500, startedAt: at(0, 10), endedAt: at(0, 10, 25) },
+    { id: 'l3', mode: 'work', completed: true, durationSec: 600, startedAt: at(0, 11), endedAt: at(0, 11, 10) }
+  ] }).sessions;
+  const st = summarizeStats(s, { end: TODAY, days: 1 });
+  eq(st.tasks, [{ taskId: null, sec: 2100 }, { taskId: 't1', sec: 1500 }],
+    '旧データ: タスクが一つなら そこへ、決まらなければタスクなしへ積む(集中時間と食い違わない)');
+}
+
 /* ===== 連続日数 ===== */
 {
   const days = dds => sessions(dds.map((dd, i) => work(`s${i}`, dd, 9, 0, 25)));

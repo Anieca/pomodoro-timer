@@ -9,7 +9,7 @@ import * as os from 'node:os';
 //  O) レンダラが範囲外・型違いを送ってきても、ディスクに出るのは正規形
 //  P) 書き出しは main が持つ正本。レンダラの未保存の編集は混ざらない
 //  Q) 書き込み元も正規化後の正本を受け取る(画面とディスクが食い違わない)
-//  R) レンダラは受け取ったスナップショットをそのまま表示する(自分では正規化しない)
+//  R) 壊れた保存データでも、レンダラは受け取ったスナップショットを落ちずに描く
 //  S) 応答待ちの間に入った編集が消えない(丸ごと置換をやめた理由そのもの)
 //  T) 未知の意図は保存を通さない
 // 応答待ちの間(レンダラは正本に応答待ちの意図を当てた見込みを描く):
@@ -20,6 +20,8 @@ import * as os from 'node:os';
 //  Y) 削除の取り消しは main の控えで戻す(応答待ちの編集も、その間の記録も失わない)
 //  Z) 取り消しは応答を待たずに送られ、失敗したらもう一度出る
 //  AA) 取り消しのボタンは、あとから来た保存失敗の通知で消えない
+// 正規化の規則そのもの(どう丸め、どう復元するか)は schema-test.mjs で見る。
+// ここで見るのは「main がその正規化を通している」ことと「描画が壊れない」ことだけ。
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 
 const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
@@ -44,10 +46,33 @@ async function launch(userData) {
   return { app, page, errors };
 }
 
-/* ===== O: レンダラが何を送ってもディスクは正規形 ===== */
+const stubSaveDialog = (app, filePath) => app.evaluate(({ dialog }, fp) => {
+  dialog.showSaveDialog = async () => ({ canceled: false, filePath: fp });
+}, filePath);
+
+/* ===== Q / O / P: 書き込みと書き出しの経路(同じアプリで順に見る) ===== */
+// 3つとも新しい正本から始める必要はないので、起動を1回にまとめる。
+// Q は設定だけを、O は O 自身が入れたものだけを、P は書き出しの中身だけを見る。
 {
   const ud = mkdir();
+  const out = path.join(ud, 'export.json');
   const { app, page, errors } = await launch(ud);
+
+  // Q: 書き込み元も正規化後の正本を受け取る
+  // 丸ごと置換だった頃は、送り返すと取りこぼしが起きるため書き込み元にだけは
+  // 正本を渡せなかった。その結果、main が丸めた値が画面に反映されず、次の保存で
+  // 古い値がまた送られてくる(画面とディスクが静かにずれる)。意図にした今は
+  // 応答に正本が入るので、書き手も必ず正規化後の内容を見る。
+  const got = await page.evaluate(async () => {
+    const res = await mutate({ type: 'settings/update', patch: { workMin: 9999 } });
+    return { fromResponse: res.snapshot.settings.workMin, onScreen: data.settings.workMin };
+  });
+  console.log('Q: got=', JSON.stringify(got));
+  assert(got.fromResponse === 120, 'Q: 応答に正規化後の正本が入る');
+  assert(got.onScreen === 120, 'Q: 書き手の画面にも丸めた値が反映される');
+  assert(readData(ud).settings.workMin === 120, 'Q: ディスクと画面が一致する');
+
+  // O: レンダラが何を送ってもディスクは正規形
   // レンダラのバグや設定ダイアログの範囲外入力を想定した、検証を通っていない意図。
   // 意図の側では丸めないので(検証を二箇所に置かない)、ディスクに出る前に
   // main の正規化が全部直しているかを見る。
@@ -60,8 +85,7 @@ async function launch(userData) {
     return window.api.mutate({ type: 'settings/update', patch: { workMin: 9999, whiteNoise: { volume: -20 } } });
   });
   const saved = readData(ud);
-  console.log('O: res.ok=', res && res.ok, 'settings=', JSON.stringify(saved.settings), 'errors=', errors);
-  assert(errors.length === 0, 'O: コンソール/ページエラーが出ない');
+  console.log('O: res.ok=', res && res.ok, 'settings=', JSON.stringify(saved.settings));
   assert(res && res.ok === true, 'O: 保存自体は成功する(拒否ではなく正規化)');
   assert(saved.settings.workMin === 120, 'O: 範囲外の設定はディスクに出る前に丸める');
   assert(saved.settings.whiteNoise.volume === 0, 'O: 入れ子の設定も丸める');
@@ -78,81 +102,111 @@ async function launch(userData) {
   await page.waitForTimeout(200);
   assert(JSON.stringify(readData(ud)) === JSON.stringify(saved), 'O: 実質変化の無い意図を通しても内容が変わらない');
 
-  await app.close();
-  fs.rmSync(ud, { recursive: true, force: true });
-}
-
-/* ===== P: 書き出しは main の正本から ===== */
-{
-  const ud = mkdir();
-  const out = path.join(ud, 'export.json');
-  const { app, page, errors } = await launch(ud);
+  // P: 書き出しは main の正本から
   await page.evaluate(t => window.api.mutate({ type: 'task/add', task: t }), task('saved', '保存済み'));
   await page.waitForTimeout(200);
-  await app.evaluate(({ dialog }, filePath) => {
-    dialog.showSaveDialog = async () => ({ canceled: false, filePath });
-  }, out);
+  await stubSaveDialog(app, out);
   // レンダラ側の手元だけを書き換える(レンダラのバグを想定)。以前は書き出す中身を
   // レンダラが渡していたため、保存されていない内容がそのまま出力されえた。
   await page.evaluate(() => { data.tasks.push({ id: 'unsaved', title: '未保存' }); });
-  const res = await page.evaluate(() => window.api.exportData('json'));
+  const exp = await page.evaluate(() => window.api.exportData('json'));
   const body = fs.readFileSync(out, 'utf8');
-  console.log('P: res=', JSON.stringify(res), 'errors=', errors);
-  assert(errors.length === 0, 'P: コンソール/ページエラーが出ない');
-  assert(res && res.saved === true, 'P: 書き出せる');
+  console.log('P: res=', JSON.stringify(exp));
+  assert(exp && exp.saved === true, 'P: 書き出せる');
   assert(/保存済み/.test(body), 'P: 正本の内容を書き出す');
   assert(!/未保存/.test(body), 'P: レンダラの手元の編集は書き出さない');
 
+  assert(errors.length === 0, 'Q/O/P: コンソール/ページエラーが出ない');
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });
 }
 
-/* ===== Q: 書き込み元も正規化後の正本を受け取る ===== */
+/* ===== R: 壊れた保存データでも落ちずに描く ===== */
 {
   const ud = mkdir();
-  const { app, page, errors } = await launch(ud);
-  // 丸ごと置換だった頃は、送り返すと取りこぼしが起きるため書き込み元にだけは
-  // 正本を渡せなかった。その結果、main が丸めた値が画面に反映されず、次の保存で
-  // 古い値がまた送られてくる(画面とディスクが静かにずれる)。意図にした今は
-  // 応答に正本が入るので、書き手も必ず正規化後の内容を見る。
-  const got = await page.evaluate(async () => {
-    const res = await mutate({ type: 'settings/update', patch: { workMin: 9999 } });
-    return { fromResponse: res.snapshot.settings.workMin, onScreen: data.settings.workMin };
-  });
-  console.log('Q: got=', JSON.stringify(got), 'errors=', errors);
-  assert(errors.length === 0, 'Q: コンソール/ページエラーが出ない');
-  assert(got.fromResponse === 120, 'Q: 応答に正規化後の正本が入る');
-  assert(got.onScreen === 120, 'Q: 書き手の画面にも丸めた値が反映される');
-  assert(readData(ud).settings.workMin === 120, 'Q: ディスクと画面が一致する');
-
-  await app.close();
-  fs.rmSync(ud, { recursive: true, force: true });
-}
-
-/* ===== R: レンダラは受け取ったものを表示するだけ ===== */
-{
-  const ud = mkdir();
-  // main が正規化して渡すので、レンダラ側に検証が無くても壊れた保存データで落ちない。
+  const at = (dayOffset, h, m) => { const d = new Date(); d.setDate(d.getDate() + dayOffset); d.setHours(h, m, 0, 0); return d.toISOString(); };
+  const today = (h, m = 0) => at(0, h, m);
   fs.writeFileSync(dataFile(ud), JSON.stringify({
-    tasks: [{ id: 't1', title: '生き残るタスク', completed: false, createdAt: 'こわれた' }],
-    sessions: [{ id: 's1', mode: 'work', durationSec: 1500, completed: true, startedAt: '不明' }],
-    settings: { workMin: 9999 }, selectedTaskId: null
+    tasks: [
+      { id: 't1', title: '生き残るタスク', completed: false, createdAt: 'こわれた', completedAt: null },
+      { id: 't2', title: '壊れた完了日', completed: true, createdAt: today(9), completedAt: {} },
+      // ToString で TypeError を投げる値(Date.parse は引数を ToString するため、
+      // NaN ではなく例外になり init ごと止まっていた)
+      { id: 't3', title: '文字列化できない日付', completed: false, createdAt: { toString: null }, completedAt: null }
+    ],
+    sessions: [
+      // 開始が壊れていて終了も無い。旧コードは RangeError で init ごと停止していた。
+      { id: 's1', mode: 'work', durationSec: 1500, completed: true, startedAt: '不明' },
+      // 終了だけ壊れている。旧コードは "NaN:NaN" を表示していた。
+      { id: 's2', mode: 'work', durationSec: 600, completed: true, startedAt: today(9), endedAt: 'garbage' },
+      // 不正・逆転・0長の区間が混ざっている(正常な1区間だけ描く)
+      {
+        id: 's3', mode: 'work', durationSec: 600, completed: true, startedAt: today(10), endedAt: today(10, 40),
+        intervals: [
+          { startedAt: 'まだ', endedAt: today(10, 10) },
+          { startedAt: today(10, 30), endedAt: today(10, 20) },
+          { startedAt: today(10, 35), endedAt: today(10, 35) },
+          { startedAt: today(10), endedAt: today(10, 10) }
+        ]
+      },
+      // 区間が全部不正(描かない)
+      { id: 's4', mode: 'work', durationSec: 1500, completed: true, startedAt: today(11), endedAt: today(11, 40), intervals: [{ startedAt: 'x', endedAt: 'y' }] },
+      // taskTimes / taskIds / intervals を持たない旧形式(旧コードは taskStats や履歴描画で落ちた)
+      { id: 's5', mode: 'work', durationSec: 1500, completed: true, startedAt: today(12), endedAt: today(12, 25) },
+      // 開始だけ壊れた昨日の記録(今日の集計に混ざらない)
+      { id: 's6', mode: 'work', durationSec: 1500, completed: true, startedAt: null, endedAt: at(-1, 15, 25) },
+      // 型違いだらけ
+      { id: 's7', mode: 'bogus', durationSec: 'oops', completed: false, startedAt: today(13), endedAt: today(13), taskTimes: [{ taskId: 't1' }] }
+    ],
+    settings: { workMin: 'x', longEvery: 1000000000, whiteNoise: { volume: 500 } },
+    selectedTaskId: null
   }));
+
   const { app, page, errors } = await launch(ud);
   const view = await page.evaluate(() => ({
-    workMin: data.settings.workMin,
-    created: data.tasks[0].createdAt,
-    started: data.sessions[0].startedAt,
     tasks: document.querySelectorAll('#taskList .task-item').length,
-    timerText: document.querySelector('#timeDisplay').textContent
+    dots: document.querySelectorAll('#cycleDots i').length,
+    timerText: document.querySelector('#timeDisplay').textContent,
+    todayCount: document.querySelector('#todayCount').textContent,
+    statOk: (() => { try { return typeof taskStats('t1').minutes === 'number'; } catch { return false; } })()
   }));
-  console.log('R: view=', JSON.stringify(view), 'errors=', errors);
-  assert(errors.length === 0, 'R: 壊れた保存データでもレンダラは落ちない');
-  assert(view.workMin === 120, 'R: レンダラが受け取る時点で設定は丸まっている');
-  assert(view.created === null, 'R: レンダラが受け取る時点で不正な日付は落ちている');
-  assert(Number.isFinite(Date.parse(view.started)), 'R: セッションの日付も有効な値で届く');
-  assert(view.tasks === 1, 'R: タスクは描画される');
-  assert(!/NaN/.test(view.timerText), 'R: タイマー表示が NaN にならない');
+
+  await page.evaluate(() => document.querySelector('#historyBtn').click());
+  await page.waitForTimeout(300);
+  const history = await page.evaluate(() => ({
+    open: !document.querySelector('#historyModal').hidden,
+    items: document.querySelectorAll('#historyList .history-item').length,
+    text: document.querySelector('#historyList').textContent
+  }));
+  await page.evaluate(() => document.querySelector('#historyClose').click());
+
+  await page.evaluate(() => openTimeline());
+  await page.waitForTimeout(300);
+  const geometry = await page.evaluate(() =>
+    [...document.querySelectorAll('#timelineBody .timeline-block')].map(el => el.style.top + '/' + el.style.height));
+
+  const csv = path.join(ud, 'tasks.csv');
+  await stubSaveDialog(app, csv);
+  const exp = await page.evaluate(() => window.api.exportData('csv-tasks'));
+  const csvBody = fs.readFileSync(csv, 'utf8');
+
+  console.log('R: view=', JSON.stringify(view), 'history=', history.items, 'blocks=', geometry, 'csv=', JSON.stringify(csvBody), 'errors=', errors);
+  assert(errors.length === 0, 'R: 壊れた保存データでもコンソール/ページエラーが出ない');
+  assert(view.tasks === 2, 'R: 未完了のタスクは描画される');
+  assert(view.dots === 12, 'R: cycle dots は丸めた後の個数で描く');
+  assert(/^\d\d:\d\d$/.test(view.timerText), 'R: タイマー表示が NaN にならない');
+  // s1〜s5 の5件。昨日の s6 と未完了の s7 は数えない
+  assert(view.todayCount === '5', 'R: 昨日の記録が今日の集計に混ざらない');
+  assert(view.statOk, 'R: 旧形式のセッションでも taskStats が回る');
+  assert(history.open && history.items === 7, 'R: 壊れた記録も含め全件を履歴に出す');
+  assert(!/NaN|Invalid/.test(history.text), 'R: 履歴に NaN / Invalid Date を表示しない');
+  // s1(開始=現在) / s2 / s3 の正常な区間 / s5。s4 は区間が全部不正、s7 は0長
+  assert(geometry.length === 4, 'R: タイムテーブルには有効な区間だけ描く');
+  assert(!geometry.some(g => /NaN/.test(g)), 'R: ブロックの座標に NaN が入らない');
+  assert(exp && exp.saved === true, 'R: CSV を書き出せる');
+  assert(!/NaN/.test(csvBody), 'R: CSV に NaN を書き出さない');
+  assert(/^t1,生き残るタスク,未完了,,,/m.test(csvBody), 'R: 分からない作成日は空欄にする(今日として捏造しない)');
+  assert(/文字列化できない日付/.test(csvBody), 'R: ToString で例外になる日付のタスクも書き出す');
 
   await app.close();
   fs.rmSync(ud, { recursive: true, force: true });

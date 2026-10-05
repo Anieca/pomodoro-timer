@@ -8,9 +8,9 @@ const TESTS = [
   // Electron を起動しない単体テストを先に走らせる(壊れていれば数百 ms で分かる)
   'schema-test.mjs',
   'actions-test.mjs',
+  'stats-test.mjs',
   'smoke.mjs',
   'smoke11.mjs',
-  'smoke12.mjs',
   'smoke13.mjs',
   'smoke14.mjs',
   'smoke16.mjs',
@@ -19,9 +19,9 @@ const TESTS = [
   'smoke19.mjs',
   'smoke20.mjs',
   'smoke21.mjs',
-  'smoke22.mjs',
   'smoke23.mjs',
-  'smoke24.mjs'
+  'smoke24.mjs',
+  'smoke25.mjs'
 ];
 
 const run = file => new Promise(resolve => {

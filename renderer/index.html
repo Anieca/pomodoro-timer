@@ -47,6 +47,7 @@
         <div class="top-actions">
           <button id="timelineBtn" class="icon-btn" title="タイムテーブル">タイムテーブル</button>
           <button id="historyBtn" class="icon-btn" title="履歴">履歴</button>
+          <button id="statsBtn" class="icon-btn" title="統計">統計</button>
           <button id="settingsBtn" class="icon-btn" title="設定">設定</button>
         </div>
       </div>
@@ -157,9 +158,36 @@
     </div>
   </div>
 
+  <!-- ======= 統計モーダル ======= -->
+  <div class="modal-backdrop" id="statsModal" hidden>
+    <div class="modal modal-wide">
+      <div class="timeline-header">
+        <h2>統計</h2>
+        <div class="stats-range" id="statsRange" role="group" aria-label="期間">
+          <button data-days="7" class="ghost-btn">7日</button>
+          <button data-days="30" class="ghost-btn">30日</button>
+          <button data-days="90" class="ghost-btn">90日</button>
+        </div>
+      </div>
+      <p class="stats-period" id="statsPeriod"></p>
+      <div class="stats-kpis" id="statsKpis"></div>
+      <h3>日別の集中時間</h3>
+      <div class="stats-bars" id="statsBars"></div>
+      <h3>時間帯</h3>
+      <div class="stats-hours" id="statsHours"></div>
+      <h3>タスク別</h3>
+      <ul class="stats-tasks" id="statsTasks"></ul>
+      <p class="hint">記録済みのセッションを開始日で集計しています(進行中のセッションは含みません)。</p>
+      <div class="modal-actions">
+        <button id="statsClose" class="primary-btn">閉じる</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" hidden></div>
   <script src="../shared/schema.js"></script>
   <script src="../shared/actions.js"></script>
+  <script src="../shared/stats.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

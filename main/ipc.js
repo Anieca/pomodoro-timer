@@ -3,7 +3,7 @@
 // 発信元の検証(isTrusted)はすべてここで行い、各モジュールは検証済みの要求だけを受ける。
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const fs = require('fs');
-const { DEFAULT_SETTINGS } = require('../shared/schema');
+const { DEFAULT_SETTINGS, parseImport } = require('../shared/schema');
 const windows = require('./windows');
 const store = require('./store');
 const sounds = require('./sounds');
@@ -45,6 +45,56 @@ async function exportData(e, payload) {
     return { saved: false, error: store.errorMessage(err) };
   }
   return { saved: true, filePath };
+}
+
+// 読み込むファイルの上限。正本は数 MB にも届かないので、これを超えるのは
+// 取り違えたファイル。丸ごと読んで JSON.parse すると固まるため先に断る。
+const IMPORT_MAX_BYTES = 50 * 1024 * 1024;
+
+// JSON(エクスポートした全データ、または保存ファイルそのもの)で正本を置き換える。
+// 選ぶ・読む・確かめる・置き換えるを main で行い、レンダラには結果だけを返す。
+// 置き換える前に件数を見せて確認を取る(今のデータは控えを残すが、気づかずに
+// 置き換えるのは避けたい)。
+// タイマーの実行中は置き換えない。実行中のセッションは置き換え前のタスクと進行を
+// 前提にしている。レンダラも開始を止めるが、ダイアログを開いている間に Tray などから
+// 開始されうるので、置き換える直前に main が自分の知っている状態で確かめる。
+const TIMER_RUNNING = 'タイマーの実行中はインポートできません。止めてからやり直してください';
+
+async function importData(e) {
+  if (tray.timerStatus() !== 'idle') return { ok: false, error: TIMER_RUNNING };
+  const win = BrowserWindow.fromWebContents(e.sender);
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  });
+  if (canceled || !filePaths || !filePaths[0]) return { canceled: true };
+  let text;
+  try {
+    if (fs.statSync(filePaths[0]).size > IMPORT_MAX_BYTES) return { ok: false, error: 'ファイルが大きすぎます' };
+    text = fs.readFileSync(filePaths[0], 'utf8');
+  } catch (err) {
+    return { ok: false, error: store.errorMessage(err) };
+  }
+  const parsed = parseImport(text);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  const { counts } = parsed;
+  const { response } = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['置き換える', 'キャンセル'],
+    defaultId: 1,
+    cancelId: 1,
+    message: '現在のデータをこのファイルの内容で置き換えますか?',
+    detail: `タスク ${counts.tasks} 件・記録 ${counts.sessions} 件と設定を読み込みます。\n` +
+      '今のデータは置き換える前に控えとして残します。'
+  });
+  if (response !== 0) return { canceled: true };
+  if (tray.timerStatus() !== 'idle') return { ok: false, error: TIMER_RUNNING };
+  try {
+    const backup = store.replaceAll(parsed.data, e.sender);
+    return { ok: true, snapshot: store.snapshot(), counts, backup };
+  } catch (err) {
+    return { ok: false, error: store.errorMessage(err), snapshot: store.snapshot() };
+  }
 }
 
 function registerIpc() {
@@ -100,6 +150,7 @@ function registerIpc() {
   });
 
   ipcMain.handle('data:export', (e, payload) => (isTrusted(e) ? exportData(e, payload) : { saved: false, error: 'untrusted sender' }));
+  ipcMain.handle('data:import', e => (isTrusted(e) ? importData(e) : UNTRUSTED));
 
   /* ---- 音源 ---- */
   ipcMain.handle('sounds:list', e => (isTrusted(e) ? sounds.listSounds() : []));

@@ -8,7 +8,7 @@
 - **タスク管理** — サイドバーでタスクを追加・完了管理。集中対象のタスクと連動。
 - **ホワイトノイズ** — フォーカス中にホワイト / ピンク / ブラウンノイズを再生。音源・音量を設定でき、設定画面の「音源フォルダを開く」から音源ファイル（mp3 / wav / ogg など）を追加可能（配布版でも利用可）。
 - **統計** — 直近 7 / 30 / 90 日の集中時間・完了ポモドーロ・完走率・連続日数と、日別の推移・時間帯の分布・タスク別の内訳を表示。
-- **履歴とエクスポート** — ポモドーロ履歴を閲覧し、JSON（全データ）/ CSV（ポモドーロ履歴・タスク）でエクスポート。
+- **履歴とエクスポート / インポート** — ポモドーロ履歴を閲覧し、JSON（全データ）/ CSV（ポモドーロ履歴・タスク）でエクスポート。JSON（全データ）をインポートすると、今のデータをその内容で置き換える（置き換える前のデータは保存先に `.before-import-` として控える）。
 - **ローカル保存** — データはローカルにアトミックに保存（クラッシュ時の破損を防止）。
 
 ## 必要環境
@@ -36,7 +36,7 @@ npm start
 テストは `scripts/` にあります。
 
 - 単体テスト(Electron を起動しない): `schema-test.mjs`(検証と正規化)/ `actions-test.mjs`(意図の適用)/ `stats-test.mjs`(統計の集計)
-- スモークテスト(Electron を起動する): `smoke-tasks`(タスク操作の基本)/ `smoke-sessions`(記録・休憩・一時停止区間)/ `smoke-overrun-delete`(超過時の実時間・実行中のタスク削除)/ `smoke-sleep`(スリープを実働から除く)/ `smoke-timeline`・`smoke-timeline-midnight`(タイムテーブルと日付またぎ)/ `smoke-stats`(統計ビュー)/ `smoke-noise-*`(ホワイトノイズの切替・後方互換・読み込み失敗)/ `smoke-corrupt-data`・`smoke-unreadable-data`(壊れた・読めない保存データ)/ `smoke-main-authority`(保存データの正本を main が持つこと)
+- スモークテスト(Electron を起動する): `smoke-tasks`(タスク操作の基本)/ `smoke-sessions`(記録・休憩・一時停止区間)/ `smoke-overrun-delete`(超過時の実時間・実行中のタスク削除)/ `smoke-sleep`(スリープを実働から除く)/ `smoke-timeline`・`smoke-timeline-midnight`(タイムテーブルと日付またぎ)/ `smoke-stats`(統計ビュー)/ `smoke-noise-*`(ホワイトノイズの切替・後方互換・読み込み失敗)/ `smoke-corrupt-data`・`smoke-unreadable-data`(壊れた・読めない保存データ)/ `smoke-main-authority`(保存データの正本を main が持つこと) / `smoke-import`(JSON インポートでの置き換え・控え・拒否)
 
 スモークテストは `scripts/test-env.mjs` の `launchApp({ seed })` で起動します。一時的な userData を作り(`seed` を渡すとそれを保存データとして置く)、`init()` の完了(`html[data-ready="true"]`)まで待ち、コンソールエラーを `errors` に集めます。新しく足したテストは `scripts/run-tests.mjs` の `TESTS` に加えてください。
 

@@ -156,6 +156,7 @@ body.focusing .sidebar:hover, body.focusing .topbar:hover { opacity: 1; }
 .icon-btn:hover { color: var(--cream); background: var(--bg-raised); }
 
 .export-wrap { position: relative; }
+.history-io { display: flex; gap: 8px; }
 .modal-actions.history-actions { justify-content: space-between; }
 /* モーダル内のメニューは上方向に開く(モーダル下端でのはみ出し防止) */
 .modal .menu { top: auto; bottom: calc(100% + 6px); right: auto; left: 0; }

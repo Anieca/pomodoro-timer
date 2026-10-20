@@ -5,7 +5,7 @@
 //  - 壊れた入力で例外を投げないこと(投げると起動そのものが止まる)
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const { normalizeData, DEFAULT_SETTINGS } = require('../shared/schema.js');
+const { normalizeData, parseImport, DEFAULT_SETTINGS } = require('../shared/schema.js');
 
 const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exitCode = 1; } else console.log('ok:', msg); };
 const eq = (a, b, msg) => assert(JSON.stringify(a) === JSON.stringify(b), `${msg}${JSON.stringify(a) === JSON.stringify(b) ? '' : `\n  got: ${JSON.stringify(a)}\n  want: ${JSON.stringify(b)}`}`);
@@ -206,6 +206,43 @@ const valid = v => typeof v === 'string' && Number.isFinite(Date.parse(v));
   // 現在時刻で埋めると CSV が「今日作った」と偽り、保存するまで起動ごとに値が変わる
   assert(tasks[2].createdAt === null && tasks[2].completedAt === null, 'タスク: 不正な日付は捏造せず null にする');
   assert(tasks[3].createdAt === null, 'タスク: ToString で例外になる値も null にする');
+}
+
+/* ===== インポート: このアプリのデータと分かるものだけ通す ===== */
+{
+  // normalizeData は何でも空のデータとして受け入れるので、検証を挟まないと
+  // 取り違えたファイルで正本が黙って空に置き換わる。
+  for (const [name, text] of Object.entries({
+    '壊れた JSON': '{ tasks: ',
+    '空のオブジェクト': '{}',
+    '配列': '[{"id":"t1"}]',
+    'null': 'null',
+    '別のアプリの JSON': '{"name":"pkg","version":"1.0.0"}',
+    'tasks が配列でない': '{"tasks":{"id":"t1"}}'
+  })) {
+    const r = parseImport(text);
+    assert(r.ok === false && typeof r.error === 'string', `インポート: ${name} は断る`);
+  }
+
+  const exported = normalizeData({
+    tasks: [{ id: 't1', title: 'あ', completed: false, createdAt: iso(9), completedAt: null }],
+    sessions: [{ id: 's1', mode: 'work', durationSec: 1500, completed: true, startedAt: iso(9), endedAt: iso(10) }],
+    selectedTaskId: 't1', settings: { workMin: 30 }, timer: { mode: 'short', cycle: 2 }
+  });
+  const r = parseImport(JSON.stringify(exported, null, 2));
+  assert(r.ok === true, 'インポート: エクスポートした JSON は通す');
+  eq(r.data, exported, 'インポート: エクスポートした内容がそのまま戻る');
+  eq(r.counts, { tasks: 1, sessions: 1 }, 'インポート: 件数を数える');
+
+  // BOM 付きで保存し直されたファイル(エディタで開いて保存した場合など)
+  assert(parseImport('\uFEFF' + JSON.stringify(exported)).ok === true, 'インポート: 先頭の BOM は無視する');
+  // 記録だけ・旧形式(pomodoros)だけのデータも、このアプリのものとして受け入れる
+  assert(parseImport('{"sessions":[]}').ok === true, 'インポート: 空の記録だけでも通す');
+  const old = parseImport(JSON.stringify({ pomodoros: [{ id: 'p1', durationSec: 1500, startedAt: iso(9), endedAt: iso(10) }] }));
+  assert(old.ok === true && old.counts.sessions === 1, 'インポート: 旧形式の pomodoros も取り込む');
+  // 値の範囲は通常の正規化と同じく丸める(断らない)
+  const clamped = parseImport('{"tasks":[],"settings":{"workMin":9999}}');
+  assert(clamped.ok === true && clamped.data.settings.workMin === 120, 'インポート: 範囲外の設定は丸めて取り込む');
 }
 
 console.log(process.exitCode ? '\nschema-test: FAILED' : '\nschema-test: OK');

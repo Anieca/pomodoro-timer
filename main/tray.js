@@ -138,4 +138,8 @@ function applyTimerState(raw) {
   if (mini) mini.webContents.send('timer:state', s);
 }
 
-module.exports = { createTray, applyTimerState };
+// 本体タイマーの最新の状態(idle / running / paused)。正本を丸ごと置き換える操作が、
+// 実行中のセッションと食い違わないよう確かめるのに使う。
+const timerStatus = () => latestState.status;
+
+module.exports = { createTray, applyTimerState, timerStatus };

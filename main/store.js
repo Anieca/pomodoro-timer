@@ -200,4 +200,30 @@ function commit(action, senderWc) {
   return preserved;
 }
 
-module.exports = { snapshot, load, consumeLoadWarning, commit, errorMessage };
+// インポートで正本を丸ごと差し替える。上書きする前に今の保存ファイルの控えを残し、
+// そのパスを返す(取り違えたファイルを入れても、控えから戻せるように)。
+// 控えを作れなければ差し替えない。原本を読めていない間は、gateWrite が原本を
+// 退避するので、それが控えになる。
+function replaceAll(raw, senderWc) {
+  const file = DATA_FILE();
+  let backup = null;
+  if (!unreadableOriginal) {
+    const dest = backupPath(file, 'before-import');
+    try {
+      fs.copyFileSync(file, dest);
+      backup = dest;
+    } catch (err) {
+      // 保存ファイルがまだ無い(初回起動のまま)なら控えるものは無い
+      if (!(err && err.code === 'ENOENT')) {
+        throw new Error('現在のデータを控えられないため、インポートを中止しました: ' + errorMessage(err));
+      }
+    }
+  }
+  const preserved = writeData(raw, senderWc);
+  // 控えていた削除は差し替え前の正本のもの。取り消すと、インポートした内容に
+  // 存在しないタスクが紛れ込む。
+  deletions.clear();
+  return backup || preserved;
+}
+
+module.exports = { snapshot, load, consumeLoadWarning, commit, replaceAll, errorMessage };

@@ -1,6 +1,6 @@
 {
   "name": "pomodoro-timer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "タスク管理と集中タイマーを備えたポモドーロタイマーアプリ",
   "main": "main.js",
   "author": "Ryo Ishii",

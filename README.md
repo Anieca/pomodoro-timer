@@ -56,6 +56,13 @@ npm start
 >
 > 各 OS のインストーラは原則その OS 上でビルドします（クロスビルドには追加ツールが必要）。
 
+### リリース
+
+1. `package.json` のバージョンを上げて main にマージする（`npm version <版> --no-git-tag-version`）
+2. GitHub で `v<版>`（例: `v1.1.0`）のタグを付けたリリースを公開する
+
+公開すると `.github/workflows/release.yml` が macOS（`.dmg` / `.zip`）・Windows（`.exe`）・Linux（`AppImage`）のインストーラを作ってリリースに添付します（署名なし）。タグと `package.json` のバージョンが一致しないときは失敗します。公開済みのリリースに作り直して添付したいときは、Actions の「Release」をタグを指定して手動で実行してください。
+
 ### 音源の追加（配布版）
 
 ユーザーが追加した音源は `userData/sounds`（macOS は `~/Library/Application Support/pomodoro-timer/sounds`）に置かれ、同梱音源と合わせて選択肢に表示されます。設定画面の「音源フォルダを開く」から該当フォルダを開けます。

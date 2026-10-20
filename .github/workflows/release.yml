@@ -1,0 +1,64 @@
+name: Release
+
+# GitHub のリリースを公開すると、各 OS 向けのインストーラを作ってそのリリースに添付する。
+# 既に公開したリリースに作り直して添付したいときは、Actions から tag を指定して手動で実行する
+# (同じ名前のファイルは上書きする)。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '添付先のリリースのタグ(例: v1.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            script: dist:mac
+            files: dist/*.dmg dist/*.zip
+          - os: windows-latest
+            script: dist:win
+            files: dist/*.exe
+          - os: ubuntu-latest
+            script: dist:linux
+            files: dist/*.AppImage
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # タグとアプリのバージョンが食い違ったまま配布しない(バージョン上げの入れ忘れを防ぐ)
+      - name: Check version matches tag
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$version" != "$TAG" ]; then
+            echo "::error::package.json のバージョン($version)がタグ($TAG)と一致しません"
+            exit 1
+          fi
+      # 署名はしない(証明書が無いため)。公開は下の gh で行うので electron-builder には任せない。
+      - name: Build installers
+        run: npm run ${{ matrix.script }} -- --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Upload to release
+        run: gh release upload "$TAG" ${{ matrix.files }} --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -9,6 +9,9 @@ import * as path from 'node:path';
 //  D) タイマーの実行中は受け付けない(ファイルを選ばせない)
 //  E) エクスポートした JSON を読み戻すと、同じ正本に戻る
 //  F) インポート前の削除は、インポート後に取り消しても戻らない
+//  G) ダイアログを開いている間に Tray から開始が来ても、タイマーは始まらない
+//  H) main が実行中と知っていれば、確認のあとでも置き換えない
+//  I) 書けずに送り直しを待っていた進行状態は、インポート後に送り直さない
 // 中身の検証(何を断り、何を通すか)は schema-test.mjs で見る。
 
 const readData = ud => JSON.parse(fs.readFileSync(dataFile(ud), 'utf8'));
@@ -168,6 +171,87 @@ async function clickImport(page) {
   console.log('F: undelete ok=', res.ok, 'tasks=', JSON.stringify(ids));
   assert(!ids.includes('old'), 'F: インポート前に削除したタスクは戻らない');
   assert(errors.length === 0, 'F: コンソールエラーなし');
+  await close();
+}
+
+/* ===== G: ダイアログ表示中の Tray からの開始 ===== */
+{
+  const { app, page, errors, userData: ud, close } = await launchApp({ seed: SEED });
+  const src = path.join(ud, 'import.json');
+  fs.writeFileSync(src, JSON.stringify(IMPORTED));
+  await stubDialogs(app, { open: src });
+  // 確認ダイアログを開いている間に、Tray のクリック(timer:command 'toggle')が届く
+  await app.evaluate(({ dialog, BrowserWindow }) => {
+    const confirm = dialog.showMessageBox;
+    dialog.showMessageBox = async (...args) => {
+      BrowserWindow.getAllWindows()[0].webContents.send('timer:command', 'toggle');
+      await new Promise(r => setTimeout(r, 300));
+      return confirm(...args);
+    };
+  });
+  await clickImport(page);
+  // 先に出るのは開始を断ったトースト。インポートの結果が出るまで待つ
+  await page.waitForFunction(() => /インポートしました|インポートに失敗/.test(document.querySelector('#toast').textContent), null, { timeout: 5000 }).catch(() => {});
+  const status = await page.evaluate(() => timer.status);
+  const ids = readData(ud).tasks.map(t => t.id);
+  console.log('G: status=', status, 'tasks=', JSON.stringify(ids));
+  assert(status === 'idle', 'G: インポート中はタイマーを開始しない');
+  assert(JSON.stringify(ids) === '["n1","n2"]', 'G: インポートは通る');
+  assert(errors.length === 0, 'G: コンソールエラーなし');
+  await close();
+}
+
+/* ===== H: main が実行中と知っている ===== */
+{
+  const { app, page, errors, userData: ud, close } = await launchApp({ seed: SEED });
+  const src = path.join(ud, 'import.json');
+  fs.writeFileSync(src, JSON.stringify(IMPORTED));
+  const before = fs.readFileSync(dataFile(ud), 'utf8');
+  await stubDialogs(app, { open: src });
+  // 確認のあいだに本体から「実行中」が届いた場合(レンダラの開始の拒否をすり抜けたとき)
+  await app.evaluate(({ dialog }) => {
+    const confirm = dialog.showMessageBox;
+    dialog.showMessageBox = async (...args) => {
+      await new Promise(r => setTimeout(r, 300));
+      return confirm(...args);
+    };
+  });
+  await page.evaluate(() => { document.querySelector('#toast').hidden = true; });
+  await page.click('#historyBtn');
+  await page.click('#importBtn');
+  await page.evaluate(() => window.api.pushTimerState({ status: 'running', mode: 'work', mm: '24', ss: '59', ratio: 0.99, remainSec: 1499 }));
+  await page.waitForSelector('#toast:not([hidden])', { timeout: 5000 }).catch(() => {});
+  const text = await toastText(page);
+  console.log('H: toast=', text);
+  assert(fs.readFileSync(dataFile(ud), 'utf8') === before, 'H: 実行中なら置き換えない');
+  assert(backups(ud).length === 0, 'H: 控えも作らない');
+  assert(/実行中/.test(text), 'H: 理由をトーストで知らせる');
+  assert(errors.length === 0, 'H: コンソールエラーなし');
+  await close();
+}
+
+/* ===== I: 送り直しを待っていた進行状態 ===== */
+{
+  const { app, page, errors, userData: ud, close } = await launchApp({ seed: SEED });
+  const src = path.join(ud, 'import.json');
+  fs.writeFileSync(src, JSON.stringify(IMPORTED));
+  await stubDialogs(app, { open: src });
+  // 保存に失敗して pending に残っている進行状態(settle が失敗時に残す形)
+  await page.evaluate(() => {
+    const action = { type: 'flow/set', mode: 'long', cycle: 4 };
+    pending.push({ seq: ++seq, action, local: action, durable: 'flow', inFlight: false, failed: true });
+    project();
+  });
+  await clickImport(page);
+  // 次に保存が通ると、残っていれば送り直される
+  await page.evaluate(() => mutate({ type: 'task/rename', id: 'n1', title: '保存を通す' }));
+  const saved = readData(ud);
+  const shown = await page.evaluate(() => ({ mode: timer.mode, cycle: timer.cycle, pending: pending.length }));
+  console.log('I: disk timer=', JSON.stringify(saved.timer), 'shown=', JSON.stringify(shown));
+  assert(saved.timer.mode === 'short' && saved.timer.cycle === 1, 'I: 置き換え前の進行状態を送り直さない');
+  assert(shown.mode === 'short' && shown.cycle === 1, 'I: 画面の進行も取り込んだもの');
+  assert(shown.pending === 0, 'I: 置き換え前の意図は残らない');
+  assert(errors.length === 0, 'I: コンソールエラーなし');
   await close();
 }
 

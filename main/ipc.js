@@ -55,7 +55,13 @@ const IMPORT_MAX_BYTES = 50 * 1024 * 1024;
 // 選ぶ・読む・確かめる・置き換えるを main で行い、レンダラには結果だけを返す。
 // 置き換える前に件数を見せて確認を取る(今のデータは控えを残すが、気づかずに
 // 置き換えるのは避けたい)。
+// タイマーの実行中は置き換えない。実行中のセッションは置き換え前のタスクと進行を
+// 前提にしている。レンダラも開始を止めるが、ダイアログを開いている間に Tray などから
+// 開始されうるので、置き換える直前に main が自分の知っている状態で確かめる。
+const TIMER_RUNNING = 'タイマーの実行中はインポートできません。止めてからやり直してください';
+
 async function importData(e) {
+  if (tray.timerStatus() !== 'idle') return { ok: false, error: TIMER_RUNNING };
   const win = BrowserWindow.fromWebContents(e.sender);
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     properties: ['openFile'],
@@ -82,6 +88,7 @@ async function importData(e) {
       '今のデータは置き換える前に控えとして残します。'
   });
   if (response !== 0) return { canceled: true };
+  if (tray.timerStatus() !== 'idle') return { ok: false, error: TIMER_RUNNING };
   try {
     const backup = store.replaceAll(parsed.data, e.sender);
     return { ok: true, snapshot: store.snapshot(), counts, backup };

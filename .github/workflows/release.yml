@@ -1,22 +1,61 @@
 name: Release
 
-# GitHub のリリースを公開すると、各 OS 向けのインストーラを作ってそのリリースに添付する。
-# 既に公開したリリースに作り直して添付したいときは、Actions から tag を指定して手動で実行する
-# (同じ名前のファイルは上書きする)。
+# package.json のバージョンを上げて main にマージすると、v<版> のリリースを作り、
+# 各 OS 向けのインストーラを添付して公開する。
+#  - リリースは下書きで作り、すべてのインストーラを添付し終えてから公開する
+#    (ビルドが失敗したら下書きのまま残るので、中途半端なリリースは表に出ない)
+#  - そのバージョンのリリースが既にあれば何もしない
+# 手動で実行すると、main の今のバージョンで同じことをする(失敗したときのやり直し用)。
+# GitHub の画面からリリースを公開した場合は、そのリリースにインストーラを添付する。
 on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
   release:
     types: [published]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: '添付先のリリースのタグ(例: v1.1.0)'
-        required: true
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.draft.outputs.tag }}
+      draft: ${{ steps.draft.outputs.draft }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create draft release
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # 画面から公開されたリリースには、そのまま添付する(作るものは無い)
+          if [ -n "$RELEASE_TAG" ]; then
+            echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+            echo "draft=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag="v$(node -p "require('./package.json').version")"
+          state=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          if [ "$state" = false ]; then
+            echo "$tag は公開済みのため何もしません"
+            exit 0
+          fi
+          # 前回失敗して残った下書きは作り直す
+          if [ "$state" = true ]; then gh release delete "$tag" --yes; fi
+          gh release create "$tag" --draft --target "$GITHUB_SHA" --title "$tag" --generate-notes
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "draft=true" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
+    if: needs.prepare.outputs.tag != ''
     strategy:
       fail-fast: false
       matrix:
@@ -32,20 +71,21 @@ jobs:
             files: dist/*.AppImage
     runs-on: ${{ matrix.os }}
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG: ${{ needs.prepare.outputs.tag }}
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          # 下書きにはまだタグが無いので、リリースの元になるコミットを取る
+          ref: ${{ needs.prepare.outputs.draft == 'true' && github.sha || needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      # タグとアプリのバージョンが食い違ったまま配布しない(バージョン上げの入れ忘れを防ぐ)
+      # タグとアプリのバージョンが食い違ったまま配布しない(画面から公開した場合の入れ忘れを防ぐ)
       - name: Check version matches tag
         run: |
           version="v$(node -p "require('./package.json').version")"
@@ -60,5 +100,15 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: false
       - name: Upload to release
         run: gh release upload "$TAG" ${{ matrix.files }} --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  publish:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.draft == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        run: gh release edit "${{ needs.prepare.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --draft=false --latest
         env:
           GH_TOKEN: ${{ github.token }}

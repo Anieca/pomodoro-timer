@@ -58,10 +58,13 @@ npm start
 
 ### リリース
 
-1. `package.json` のバージョンを上げて main にマージする（`npm version <版> --no-git-tag-version`）
-2. GitHub で `v<版>`（例: `v1.1.0`）のタグを付けたリリースを公開する
+`package.json` のバージョンを上げて main にマージするだけです（`npm version <版> --no-git-tag-version`）。
 
-公開すると `.github/workflows/release.yml` が macOS（`.dmg` / `.zip`）・Windows（`.exe`）・Linux（`AppImage`）のインストーラを作ってリリースに添付します（署名なし）。タグと `package.json` のバージョンが一致しないときは失敗します。公開済みのリリースに作り直して添付したいときは、Actions の「Release」をタグを指定して手動で実行してください。
+マージすると `.github/workflows/release.yml` が `v<版>`（例: `v1.1.0`）のリリースを下書きで作り、macOS（`.dmg` / `.zip`）・Windows（`.exe`）・Linux（`AppImage`）のインストーラ（署名なし）をすべて添付してから公開します。リリースノートはマージした PR から自動で作られます。
+
+- ビルドが失敗したときはリリースが下書きのまま残ります。直してから Actions の「Release」を手動で実行すると、下書きを作り直して公開します
+- そのバージョンのリリースが既に公開されていれば何もしません
+- GitHub の画面から手でリリースを公開した場合も、そのリリースにインストーラを添付します（タグと `package.json` のバージョンが一致しないときは失敗します）
 
 ### 音源の追加（配布版）
 

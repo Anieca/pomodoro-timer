@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Data } from '../src/core/model.ts';
+import type {} from '../src/ui/store.ts'; // window.api の型
 
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 export const MIN = 60_000;
@@ -60,11 +61,16 @@ export async function launchApp({ seed, legacy, userData, beforeWindow }: Option
   page.on('pageerror', e => errors.push(String(e)));
   await page.waitForSelector('html[data-ready="true"]', { state: 'attached', timeout: 15_000 });
   type G = { __host: { advance(ms: number): void; jump(ms: number): void; snapshot(): { data: Data } } };
+  // 画面の操作(ipcRenderer.send)と、テストが時計を動かす操作(app.evaluate)は別の経路で
+  // main に届くので、そのままでは順序が保証されない(押した開始より先に時計が進みうる)。
+  // 同じ画面からの IPC は送った順に届くので、往復の問い合わせを一度挟めば、
+  // それより前に押した操作は main に届いている。
+  const flush = (): Promise<unknown> => page.evaluate(() => window.api.getState());
   return {
     app, page, errors, userData: ud,
-    advance: ms => app.evaluate((_e, n) => (globalThis as unknown as G).__host.advance(n), ms),
-    sleep: ms => app.evaluate((_e, n) => (globalThis as unknown as G).__host.jump(n), ms),
-    data: () => app.evaluate(() => (globalThis as unknown as G).__host.snapshot().data),
+    advance: async ms => { await flush(); await app.evaluate((_e, n) => (globalThis as unknown as G).__host.advance(n), ms); },
+    sleep: async ms => { await flush(); await app.evaluate((_e, n) => (globalThis as unknown as G).__host.jump(n), ms); },
+    data: async () => { await flush(); return app.evaluate(() => (globalThis as unknown as G).__host.snapshot().data); },
     saved: () => JSON.parse(fs.readFileSync(dataFile(ud), 'utf8')) as Data,
     close: async () => {
       await app.close();

@@ -79,7 +79,9 @@ export class Store {
 
   /** 保存する。読めなかった原本を退避した場合はその先を返す。失敗は投げる。 */
   save(data: Data): string | null {
-    const preserved = this.preserveUnreadable();
+    // 新しい内容を書き終えてから、読めなかった原本を退避する。先に退避すると、
+    // 書き込みが失敗したとき正規の場所にファイルが無くなり、次の起動が初回起動と
+    // 誤解して空のデータで始まってしまう。
     const tmp = this.file + '.tmp';
     const fd = fs.openSync(tmp, 'w');
     try {
@@ -87,6 +89,13 @@ export class Store {
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
+    }
+    let preserved: string | null;
+    try {
+      preserved = this.preserveUnreadable();
+    } catch (err) {
+      try { fs.unlinkSync(tmp); } catch {}
+      throw err;
     }
     fs.renameSync(tmp, this.file);
     return preserved;

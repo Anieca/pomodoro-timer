@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { reduce } from '../src/core/engine.ts';
 import { emptyData } from '../src/core/model.ts';
+import { Host } from '../src/main/host.ts';
 import { Store } from '../src/main/store.ts';
 
 function setup() {
@@ -71,6 +72,44 @@ test('読めなかった原本は、退避してからでないと上書きし�
   fs.chmodSync(preserved, 0o600);
   assert.deepEqual(JSON.parse(fs.readFileSync(preserved, 'utf8')), sample());
   assert.equal(t.store.save(emptyData()), null, '退避は一度だけ');
+});
+
+test('読めなかった原本は、新しい内容を書けなかったら退避せずにその場に残す', { skip: process.getuid?.() === 0 || process.platform === 'win32' }, () => {
+  const t = setup();
+  fs.writeFileSync(t.file, JSON.stringify(sample()));
+  fs.chmodSync(t.file, 0o000);
+  t.store.load();
+  // 一時ファイルの場所をディレクトリで塞いで、書き込みを失敗させる
+  fs.mkdirSync(t.file + '.tmp');
+  assert.throws(() => t.store.save(emptyData()));
+  assert.ok(fs.existsSync(t.file), '原本は正規の場所に残っている');
+  assert.ok(!t.ls().some(f => f.includes('.unreadable-')), 'まだ退避していない');
+  // 塞いでいたものが無くなれば、次の保存で退避してから書ける
+  fs.rmdirSync(t.file + '.tmp');
+  const preserved = t.store.save(emptyData());
+  assert.ok(preserved?.includes('.unreadable-'));
+  fs.chmodSync(t.file, 0o600);
+  assert.deepEqual(JSON.parse(fs.readFileSync(t.file, 'utf8')), emptyData());
+});
+
+test('インポートの保存に失敗したら、いまの状態のまま変えない', () => {
+  let fail = false;
+  const store = {
+    load: () => ({ data: sample(), notices: [] }),
+    save: () => { if (fail) throw new Error('ディスクがいっぱいです'); return null; }
+  } as unknown as Store;
+  const host = new Host(store);
+  const before = host.snapshot().data;
+  let changed = 0;
+  host.on('change', () => changed++);
+  fail = true;
+  assert.throws(() => host.replace(emptyData()), /ディスクがいっぱい/);
+  assert.equal(host.snapshot().data, before);
+  assert.equal(changed, 0);
+  fail = false;
+  host.replace(emptyData());
+  assert.deepEqual(host.snapshot().data, emptyData());
+  assert.equal(changed, 1);
 });
 
 test('インポート前の控え', () => {

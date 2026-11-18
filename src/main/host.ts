@@ -75,10 +75,17 @@ export class Host extends EventEmitter<Events> {
     for (const effect of result.effects) this.emit('effect', effect);
   }
 
-  /** 保存データを丸ごと置き換える(インポート)。 */
+  /**
+   * 保存データを丸ごと置き換える(インポート)。保存できてから差し替える。
+   * 先に差し替えると、保存に失敗したとき「置き換えられなかった」と伝えたのに
+   * 中身だけが入れ替わったまま残り、次の保存で元のデータを上書きしてしまう。
+   */
   replace(data: Data): void {
+    const preserved = this.store.save(data); // 失敗したら投げる(いまの状態はそのまま)
     this.data = data;
-    this.save(true);
+    this.dirtySince = null;
+    this.lastSaveError = null;
+    if (preserved) this.emit('notice', '読み込めなかった元のファイルを退避しました: ' + preserved);
     this.emit('change', this.snapshot());
   }
 
@@ -98,14 +105,13 @@ export class Host extends EventEmitter<Events> {
     this.emit('pulse');
   }
 
-  private save(rethrow = false): void {
+  private save(): void {
     try {
       const preserved = this.store.save(this.data);
       this.dirtySince = null;
       this.lastSaveError = null;
       if (preserved) this.emit('notice', '読み込めなかった元のファイルを退避しました: ' + preserved);
     } catch (err) {
-      if (rethrow) throw err;
       this.dirtySince = Date.now();
       const message = errorMessage(err);
       // 同じ失敗を鼓動のたびに知らせない

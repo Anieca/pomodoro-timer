@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { Page } from 'playwright-core';
 import { dataFile, launchApp, legacyFile, MIN, tempUserData, type Launched } from './env.ts';
 
 async function run(options: Parameters<typeof launchApp>[0], body: (t: Launched) => Promise<void>): Promise<void> {
@@ -22,6 +23,17 @@ const addTask = async (t: Launched, title: string): Promise<void> => {
   await t.page.waitForSelector(`.task-title:text-is("${title}")`);
 };
 const clock = (t: Launched): Promise<string> => t.page.innerText('#clock');
+// 動いている間の残り時間。テストが進める main の時計とは別に実時間もわずかに流れるので
+// (遅いマシンでは 1 秒を超える)、期待値から 5 秒以内の減りは許す。
+// 止まっている間の残り時間は実時間に左右されないので、厳密に比べること。
+const expectRemaining = (page: Page, selector: string, mmss: string): Promise<unknown> =>
+  page.waitForFunction(([sel, want]) => {
+    const sec = (v: string): number => { const [m, s] = v.split(':').map(Number); return m * 60 + s; };
+    const text = document.querySelector(sel)?.textContent ?? '';
+    if (!/^\d+:\d\d$/.test(text)) return false;
+    const diff = sec(want) - sec(text);
+    return diff >= 0 && diff <= 5;
+  }, [selector, mmss] as const, { timeout: 5000 });
 const expectText = (t: Launched, selector: string, text: string | RegExp): Promise<unknown> =>
   t.page.waitForFunction(([sel, src, flags]) => {
     const el = document.querySelector(sel);
@@ -74,11 +86,11 @@ test('フォーカスを完走すると記録され、休憩が続き、今日�
   await page.click('#toggle');
   await expectText(t, '#phase', 'フォーカス');
   await t.advance(10 * MIN);
-  await expectText(t, '#clock', '15:00');
+  await expectRemaining(page, '#clock', '15:00');
   await page.click('.task-title:text-is("B")'); // 止めずに切り替える
   await t.advance(15 * MIN);
   await expectText(t, '#phase', '小休憩');
-  await expectText(t, '#clock', '05:00');
+  await expectRemaining(page, '#clock', '05:00');
   await expectText(t, '#todayFocus', '25分');
   await expectText(t, '#todayPomos', '完走 1 回');
   assert.equal(await page.getAttribute('html', 'data-ambience'), 'pink-noise.wav', '休憩中は休憩用の音源');
@@ -121,7 +133,7 @@ test('スリープはフォーカスの実働に入らない', () => run({}, asy
   await t.page.click('#toggle');
   await t.advance(10 * MIN);
   await t.sleep(3 * 60 * MIN);
-  await expectText(t, '#clock', '15:00');
+  await expectRemaining(t.page, '#clock', '15:00');
   await expectText(t, '#phase', 'フォーカス');
   await t.advance(15 * MIN);
   await expectText(t, '#phase', '小休憩');
@@ -294,5 +306,5 @@ test('ミニタイマーは同じ状態を映し、そこからも操作でき�
   await mini.click('#miniToggle');
   await expectText(t, '#toggle', '一時停止');
   await t.advance(5 * MIN);
-  await mini.waitForFunction(() => document.querySelector('#miniClock')?.textContent === '20:00');
+  await expectRemaining(mini, '#miniClock', '20:00');
 }));

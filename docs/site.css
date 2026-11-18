@@ -117,11 +117,9 @@ table { border-collapse: collapse; min-width: min(100%, 420px); }
 th, td { padding: 10px 24px 10px 0; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 th { font-size: 0.88rem; font-weight: 500; color: var(--ink-3); }
 
-.links { margin: 0; padding: 0; list-style: none; }
-.links li { display: grid; grid-template-columns: 12em 1fr; gap: 24px; padding: 16px 0; border-bottom: 1px solid var(--line); }
-.links li:first-child { border-top: 1px solid var(--line); }
-.links a { font-weight: 600; }
-.links span { color: var(--ink-2); }
+main #more { padding: 48px 0; }
+.links { display: flex; flex-wrap: wrap; gap: 12px 40px; margin: 0; padding: 0; list-style: none; }
+.links a { font-weight: 500; }
 
 footer { padding: 40px 0 56px; border-top: 1px solid var(--line); font-size: 0.88rem; color: var(--ink-3); }
 footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
@@ -131,7 +129,6 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
   .top nav a:not(:last-child) { display: none; }
   main section { padding: 64px 0; }
   .feature { grid-template-columns: 1fr; gap: 24px; }
-  .links li { grid-template-columns: 1fr; gap: 2px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

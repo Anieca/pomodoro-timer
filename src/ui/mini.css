@@ -1,0 +1,38 @@
+/* ミニタイマー。数字だけを静かに置き、状態は細い線一本で示す。 */
+:root {
+  --bg: rgba(255, 255, 255, 0.92); --ink: #16181b; --ink-3: #9da1a7; --line: rgba(0, 0, 0, 0.08);
+  --focus: #3346c4; --rest: #3a7d63; color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: rgba(27, 28, 31, 0.92); --ink: #ececee; --ink-3: #686b72; --line: rgba(255, 255, 255, 0.08); --focus: #8c9cf5; --rest: #7cc3a5; }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: transparent; overflow: hidden; user-select: none; cursor: default; }
+#root { height: 100%; padding: 8px; }
+.mini {
+  --accent: var(--focus);
+  position: relative; height: 100%; display: flex; align-items: center; gap: 10px; padding: 0 10px 0 16px;
+  background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12); backdrop-filter: blur(20px);
+  font: 400 11.5px/1.4 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  -webkit-app-region: drag;
+}
+.mini[data-kind="short"], .mini[data-kind="long"] { --accent: var(--rest); }
+.mini-fill { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--accent); }
+.mini[data-status="paused"] .mini-fill { opacity: 0.4; }
+.mini-text { flex: 1; min-width: 0; }
+.mini-clock { font-size: 34px; line-height: 1.05; font-weight: 200; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.mini[data-status="paused"] .mini-clock { color: var(--ink-3); }
+.mini-line { color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+button { font: inherit; border: 0; background: none; color: inherit; padding: 0; -webkit-app-region: no-drag; }
+.mini-btn { width: 32px; height: 32px; border-radius: 50%; font-size: 11px; color: var(--ink); background: var(--line); }
+.mini-btn:hover { background: color-mix(in srgb, var(--ink) 14%, transparent); }
+.mini-close { position: absolute; top: 5px; right: 7px; width: 14px; height: 14px; color: var(--ink-3); opacity: 0; line-height: 1; font-size: 12px; }
+.mini:hover .mini-close { opacity: 1; }
+
+/* 動いている間は、本体と同じ深い色に沈む */
+.mini { transition: background-color 1.2s ease, color 1.2s ease; }
+.mini[data-status="running"] {
+  --bg: rgba(13, 17, 34, 0.94); --ink: #e8eaf2; --ink-3: #5d6582; --line: rgba(232, 234, 242, 0.08); --focus: #9aa8ff; --rest: #8fd1b4;
+}
+.mini[data-status="running"]:is([data-kind="short"], [data-kind="long"]) { --bg: rgba(12, 26, 22, 0.94); --ink-3: #587268; }

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decode, parseImport } from './codec.ts';
 import { reduce, type Command } from './engine.ts';
-import { dayBlocks, dayTotals, sessionMs, sessionsCsv, summarize, taskTotals, tasksCsv, timerView, cyclePosition } from './derive.ts';
+import { dayBlocks, dayTotals, wallHours, sessionMs, sessionsCsv, summarize, taskTotals, tasksCsv, timerView, cyclePosition } from './derive.ts';
 import { emptyData, type Data } from './model.ts';
 
 const MIN = 60_000;
@@ -278,4 +278,18 @@ test('CSV は数式として解釈されうるセルを無害化する', () => {
   const rows = sessionsCsv(data).split('\n');
   assert.equal(rows.length, 2);
   assert.match(rows[1], /フォーカス,2026-11-16 09:00:00,2026-11-16 09:25:00,25,25,はい,0/);
+});
+
+test('帯の位置は時計の表示で決める(夏時間の切り替え日でもずれない)', () => {
+  const saved = process.env.TZ;
+  process.env.TZ = 'America/New_York';
+  try {
+    const day = new Date(2026, 10, 1).getTime(); // 夏時間が終わり、25 時間ある日
+    assert.equal(wallHours(new Date(2026, 10, 1, 23, 30).getTime(), day), 23.5);
+    assert.equal(wallHours(new Date(2026, 10, 1, 9, 0).getTime(), day), 9);
+    assert.equal(wallHours(new Date(2026, 10, 2, 0, 30).getTime(), day), 24, '翌日は端に寄せる');
+    assert.equal(wallHours(day - 1, day), 0);
+  } finally {
+    if (saved === undefined) delete process.env.TZ; else process.env.TZ = saved;
+  }
 });

@@ -19,6 +19,18 @@ export function addDays(t: number, n: number): number {
   return d.getTime();
 }
 
+/**
+ * その日の中での、時計の針の位置(0〜24 時)。0 時からの経過時間ではなく、
+ * 実際の時計の表示から求める。夏時間の切り替え日(23 / 25 時間)でも、
+ * 23:30 は 23.5 の位置になる(経過時間で数えると 24.5 になり、帯がずれる)。
+ */
+export function wallHours(t: number, dayStart: number): number {
+  if (t <= dayStart) return 0;
+  if (t >= addDays(dayStart, 1)) return 24;
+  const d = new Date(t);
+  return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600 + d.getMilliseconds() / 3_600_000;
+}
+
 const p2 = (n: number): string => String(n).padStart(2, '0');
 
 /** 残り時間 "24:59"。切り上げるので、0:00 が出るのは本当に尽きたときだけ。 */

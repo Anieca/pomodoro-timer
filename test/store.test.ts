@@ -119,3 +119,20 @@ test('インポート前の控え', () => {
   const backup = t.store.backup('before-import');
   assert.deepEqual(JSON.parse(fs.readFileSync(backup!, 'utf8')), sample());
 });
+
+test('止まっていた直後の操作でも、先に空白を補正してから処理する', () => {
+  const store = { load: () => ({ data: emptyData(), notices: [] }), save: () => null } as unknown as Store;
+  const host = new Host(store);
+  const MIN = 60_000;
+  host.dispatch({ type: 'timer/start' });
+  host.advance(5 * MIN);
+  // 鼓動が来ないまま 3 時間が過ぎ(スリープ)、復帰後の最初の出来事が一時停止の操作
+  (host as unknown as { offset: number }).offset += 3 * 60 * MIN;
+  host.dispatch({ type: 'timer/pause' });
+  const data = host.snapshot().data;
+  assert.equal(data.sessions.length, 0, '眠っていた時間で完走にしない');
+  assert.equal(data.run?.kind, 'focus');
+  assert.equal(data.run?.open, null);
+  const worked = data.run!.spans.reduce((n, s) => n + s.end - s.start, 0);
+  assert.ok(Math.abs(worked - 5 * MIN) < 1000, '実働は眠る前の 5 分だけ');
+});

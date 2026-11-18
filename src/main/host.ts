@@ -66,6 +66,21 @@ export class Host extends EventEmitter<Events> {
   }
 
   dispatch(cmd: Command): void {
+    // どの命令も、止まっていた時間の補正を済ませてから処理する。鼓動より先に操作が
+    // 届くと(スリープ明けの一押しなど)、補正前の時計で完了が判定され、眠っていた
+    // 時間までフォーカスとして記録されてしまう。補正そのもの(timer/gap)は除く。
+    if (cmd.type !== 'timer/gap') this.reconcile();
+    this.apply(cmd);
+  }
+
+  /** 前に生きていたのを確かめた時刻から鼓動が空きすぎていたら、その間は止まっていたとして補正する。 */
+  private reconcile(): void {
+    const now = this.now();
+    if (now - this.lastPulse > GAP_MS) this.apply({ type: 'timer/gap', from: this.lastPulse, to: now });
+    this.lastPulse = now;
+  }
+
+  private apply(cmd: Command): void {
     const result = reduce(this.data, cmd, this.now());
     if (result.data !== this.data) {
       this.data = result.data;
@@ -96,10 +111,7 @@ export class Host extends EventEmitter<Events> {
   }
 
   pulse(): void {
-    const now = this.now();
-    // suspend の通知を取り逃しても、鼓動の飛びで止まっていたことは分かる
-    if (now - this.lastPulse > GAP_MS) this.dispatch({ type: 'timer/gap', from: this.lastPulse, to: now });
-    this.lastPulse = now;
+    // suspend の通知を取り逃しても、鼓動の飛びで止まっていたことは分かる(dispatch が補正する)
     this.dispatch({ type: 'timer/tick' });
     if (this.dirtySince !== null && Date.now() - this.dirtySince > RETRY_SAVE_MS) this.save();
     this.emit('pulse');

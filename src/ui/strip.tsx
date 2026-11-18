@@ -1,9 +1,7 @@
 // 一日の物差し。縦が時刻で、実働の区間を帯として置く。「いま」と「ふりかえり」で同じものを使う。
 import { useEffect, useRef } from 'preact/hooks';
-import { fmtDur, fmtTime, taskTitle, type Block } from '../core/derive.ts';
+import { fmtDur, fmtTime, taskTitle, wallHours, type Block } from '../core/derive.ts';
 import { KIND_LABEL, type Task } from '../core/model.ts';
-
-const HOUR_MS = 3600_000;
 
 interface Props {
   blocks: Block[];
@@ -23,18 +21,19 @@ export function hourRange(blocks: Block[], dayStart: number, now?: number): [num
   const points = blocks.flatMap(b => [b.start, b.end]);
   if (now !== undefined) points.push(now);
   if (points.length === 0) return [8, 19];
-  const first = Math.floor((Math.min(...points) - dayStart) / HOUR_MS);
-  const last = Math.ceil((Math.max(...points) - dayStart) / HOUR_MS);
+  const first = Math.floor(wallHours(Math.min(...points), dayStart));
+  const last = Math.ceil(wallHours(Math.max(...points), dayStart));
   const from = Math.max(0, first - (now !== undefined ? 1 : 0));
   return [from, Math.min(24, Math.max(last + 1, from + 6))];
 }
 
 export function DayStrip({ blocks, dayStart, tasks, hours, now, hourPx = 60, selectedId, onPick }: Props) {
   const [from, to] = hours;
-  const top = dayStart + from * HOUR_MS;
-  const y = (t: number): number => ((t - top) / HOUR_MS) * hourPx;
+  // 位置は時計の表示から求める(夏時間の切り替え日でも、時台の目盛りと揃う)
+  const y = (t: number): number => (wallHours(t, dayStart) - from) * hourPx;
   const nowRef = useRef<HTMLDivElement>(null);
-  const showNow = now !== undefined && now >= top && now <= dayStart + to * HOUR_MS;
+  const nowAt = now === undefined ? null : wallHours(now, dayStart);
+  const showNow = nowAt !== null && nowAt >= from && nowAt <= to;
 
   // 開いたとき、「いま」が見える位置へ寄せる
   useEffect(() => { nowRef.current?.scrollIntoView({ block: 'center' }); }, [dayStart, showNow]);
@@ -67,8 +66,8 @@ export function DayStrip({ blocks, dayStart, tasks, hours, now, hourPx = 60, sel
         );
       })}
       {showNow && (
-        <div class="strip-now" ref={nowRef} style={{ top: `${y(now)}px` }}>
-          <span class="num">{fmtTime(now)}</span>
+        <div class="strip-now" ref={nowRef} style={{ top: `${y(now!)}px` }}>
+          <span class="num">{fmtTime(now!)}</span>
         </div>
       )}
     </div>

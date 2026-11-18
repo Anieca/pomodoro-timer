@@ -1,19 +1,24 @@
 {
   "name": "pomodoro-timer",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "タスク管理と集中タイマーを備えたポモドーロタイマーアプリ",
-  "main": "main.js",
+  "main": "out/main.js",
   "author": "Ryo Ishii",
   "license": "MIT",
   "scripts": {
-    "start": "electron .",
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/build.mjs && electron .",
+    "dev": "node scripts/build.mjs --watch",
     "postinstall": "node scripts/ensure-electron.mjs",
-    "test": "node scripts/run-tests.mjs",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder",
-    "dist:mac": "electron-builder --mac --x64 --arm64",
-    "dist:win": "electron-builder --win --x64",
-    "dist:linux": "electron-builder --linux --x64"
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node --test src/core/core.test.ts test/store.test.ts",
+    "test:e2e": "node scripts/build.mjs && node --test --test-concurrency=1 test/e2e.test.ts",
+    "test": "npm run typecheck && npm run test:unit && npm run test:e2e",
+    "pack": "node scripts/build.mjs && electron-builder --dir",
+    "dist": "node scripts/build.mjs && electron-builder",
+    "dist:mac": "node scripts/build.mjs && electron-builder --mac --x64 --arm64",
+    "dist:win": "node scripts/build.mjs && electron-builder --win --x64",
+    "dist:linux": "node scripts/build.mjs && electron-builder --linux --x64"
   },
   "build": {
     "appId": "com.pomodoroatelier.app",
@@ -24,12 +29,9 @@
     },
     "afterPack": "scripts/after-pack.js",
     "files": [
-      "main.js",
-      "main/**/*",
-      "preload.js",
-      "shared/**/*",
-      "renderer/**/*",
-      "assets/**/*",
+      "out/**/*",
+      "!out/**/*.map",
+      "assets/sounds/**/*",
       "build/icon.png"
     ],
     "mac": {
@@ -52,8 +54,12 @@
     }
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
     "electron": "^43.2.0",
     "electron-builder": "^26.15.3",
-    "playwright-core": "^1.60.0"
+    "esbuild": "^0.28.2",
+    "playwright-core": "^1.60.0",
+    "preact": "^11.2.0",
+    "typescript": "^7.0.2"
   }
 }

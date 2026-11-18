@@ -49,12 +49,15 @@ case "$(uname -s)" in
     if [ ! -w "$dest_dir" ]; then dest_dir="$HOME/Applications"; mkdir -p "$dest_dir"; fi
     dest="$dest_dir/$APP_NAME.app"
 
-    # 起動中なら終わらせる(終了時に進行中のセッションは一時停止として保存される)
-    if pgrep -xq "$APP_NAME"; then
+    # 起動中なら終わらせる(終了時に進行中のセッションは一時停止として保存される)。
+    # macOS はプロセス名を 15 文字で切り詰めるので、名前ではなく実行ファイルのパスで探す。
+    running() { pgrep -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" >/dev/null; }
+    if running; then
       say "起動中の $APP_NAME を終了します…"
       osascript -e "tell application \"$APP_NAME\" to quit" >/dev/null 2>&1 || true
-      for _ in $(seq 1 20); do pgrep -xq "$APP_NAME" || break; sleep 0.5; done
-      pgrep -xq "$APP_NAME" && fail "$APP_NAME を終了できませんでした。手で終了してからもう一度実行してください"
+      # 初めてのときは、macOS がこのスクリプトにアプリの操作を許すか確かめるので長めに待つ
+      for _ in $(seq 1 60); do running || break; sleep 0.5; done
+      running && fail "$APP_NAME を終了できませんでした。手で終了してからもう一度実行してください"
     fi
 
     rm -rf "$dest"

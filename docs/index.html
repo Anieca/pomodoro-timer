@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pomodoro Atelier</title>
+<meta name="description" content="始めると、ひとつのことだけが残る。タスクとタイマーのデスクトップアプリ。">
+<link rel="icon" href="images/icon.png">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+
+<div class="hero" id="hero" data-state="idle">
+  <header class="top recede">
+    <a class="brand" href="./"><img src="images/icon.png" alt="">Pomodoro Atelier</a>
+    <nav>
+      <a href="#features">できること</a>
+      <a href="#install">インストール</a>
+      <a href="https://github.com/Anieca/pomodoro-timer">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="stage" aria-label="タイマーの見本">
+    <p class="phase"><span id="phase">フォーカス</span><span class="pips" aria-hidden="true"><i data-on></i><i data-on></i><i></i><i></i></span></p>
+    <p class="subject">設計書の骨子を書く</p>
+    <div class="dial">
+      <p class="clock" id="clock">25:00</p>
+      <div class="progress"><i id="progress"></i></div>
+    </div>
+    <div class="controls recede-still">
+      <button type="button" class="primary" id="toggle">始める</button>
+    </div>
+  </div>
+
+  <div class="intro recede">
+    <h1>始めると、ひとつのことだけが残る。</h1>
+    <p>タスクとタイマーのデスクトップアプリ。</p>
+    <div class="cta">
+      <a class="btn" href="#install">インストール</a>
+      <span class="meta">macOS / Windows / Linux</span>
+    </div>
+  </div>
+</div>
+
+<main>
+
+<section id="features">
+  <div class="wrap">
+    <h2>できること</h2>
+
+    <div class="feature">
+      <div class="text">
+        <h3>注意を一点に</h3>
+        <p>始めると画面が沈み、周りが退く。手を止めれば、タスクと残り時間だけになる。</p>
+      </div>
+      <figure><img src="images/immersed.png" alt="集中中の画面。紺の地に、タスク名と残り時間と経過の線だけがある" loading="lazy"></figure>
+    </div>
+
+    <div class="feature">
+      <div class="text">
+        <h3>時間を正直に</h3>
+        <p>一時停止やスリープの間は数えない。途中でタスクを替えても、時間はそれぞれに付く。</p>
+      </div>
+      <figure><img src="images/now.png" alt="一時停止中の画面。左にタスク、中央に残り時間、右に今日の帯" loading="lazy"></figure>
+    </div>
+
+    <div class="feature">
+      <div class="text">
+        <h3>すぐにふりかえる</h3>
+        <p>今日、いつ何をしていたか。直近の傾向も。記録はこの端末の中だけに置き、JSON と CSV で書き出せる。</p>
+      </div>
+      <figure><img src="images/review.png" alt="ふりかえりの画面。一日の帯と記録、直近 7 日の傾向" loading="lazy"></figure>
+    </div>
+
+    <div class="feature">
+      <div class="text">
+        <h3>閉じても</h3>
+        <p>残り時間はメニューバーと小さなタイマーに。区切りは通知とチャイムで。</p>
+      </div>
+      <figure class="small"><img src="images/mini.png" alt="ミニタイマー。タスク名と残り時間と経過の線" loading="lazy"></figure>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>インストール</h2>
+    <p>macOS と Linux はターミナルで。更新も同じ。</p>
+    <pre><code>curl -fsSL https://raw.githubusercontent.com/Anieca/pomodoro-timer/main/scripts/install.sh | bash</code></pre>
+    <ul class="plain">
+      <li><strong>macOS</strong>: <code>/Applications</code> に入れて起動する。署名のないアプリのため、ダウンロードの印を外す。</li>
+      <li><strong>Linux</strong>: <code>~/.local/bin</code> に AppImage を置く。</li>
+      <li><strong>Windows</strong>: <a href="https://github.com/Anieca/pomodoro-timer/releases/latest">リリース</a>のインストーラを使う。</li>
+    </ul>
+
+    <h3>キー操作</h3>
+    <table>
+      <tr><td><kbd>Space</kbd></td><td>開始 / 一時停止</td></tr>
+      <tr><td><kbd>N</kbd></td><td>タスクを足す</td></tr>
+      <tr><td><kbd>⌘</kbd> <kbd>1</kbd> / <kbd>⌘</kbd> <kbd>2</kbd></td><td>いま / ふりかえり</td></tr>
+      <tr><td><kbd>⌘</kbd> <kbd>,</kbd></td><td>設定</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="more">
+  <div class="wrap">
+    <ul class="links">
+      <li><a href="https://github.com/Anieca/pomodoro-timer/blob/main/docs/DESIGN.md">デザインの理由</a></li>
+      <li><a href="https://github.com/Anieca/pomodoro-timer/blob/main/docs/CONCEPT.md">コンセプト</a></li>
+      <li><a href="https://github.com/Anieca/pomodoro-timer/releases">リリース</a></li>
+    </ul>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>MIT License</span>
+    <a href="https://github.com/Anieca/pomodoro-timer">github.com/Anieca/pomodoro-timer</a>
+  </div>
+</footer>
+
+<script>
+// 見本のタイマー。アプリと同じく、動き出すと沈み、手を止めると操作が消える。
+(() => {
+  const hero = document.getElementById('hero');
+  const clock = document.getElementById('clock');
+  const bar = document.getElementById('progress');
+  const button = document.getElementById('toggle');
+  const phase = document.getElementById('phase');
+  const TOTAL = 25 * 60 * 1000;
+  let used = 0, since = null, still = null;
+
+  const fmt = (ms) => {
+    const s = Math.ceil(Math.max(0, TOTAL - ms) / 1000);
+    return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  };
+  const elapsed = () => used + (since === null ? 0 : Date.now() - since);
+  const draw = () => {
+    const ms = elapsed();
+    clock.textContent = fmt(ms);
+    bar.style.width = Math.min(100, (ms / TOTAL) * 100) + '%';
+  };
+  const wake = () => {
+    hero.removeAttribute('data-still');
+    clearTimeout(still);
+    if (since !== null) still = setTimeout(() => hero.setAttribute('data-still', ''), 2600);
+  };
+  const toggle = () => {
+    if (since === null) {
+      since = Date.now();
+      hero.dataset.state = 'running';
+      phase.textContent = 'フォーカス';
+      button.textContent = '一時停止';
+    } else {
+      used += Date.now() - since;
+      since = null;
+      hero.dataset.state = 'paused';
+      phase.textContent = 'フォーカス・一時停止中';
+      button.textContent = '再開';
+    }
+    wake();
+    draw();
+  };
+
+  button.addEventListener('click', toggle);
+  for (const type of ['mousemove', 'keydown', 'scroll', 'touchstart']) addEventListener(type, wake, { passive: true });
+  setInterval(() => { if (since !== null) draw(); }, 250);
+})();
+</script>
+</body>
+</html>
